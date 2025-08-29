@@ -1,0 +1,21 @@
+[package]
+name = "interstice-adapters"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+# Internal crates
+interstice-core = { path = "../interstice-core" }
+
+# Workspace dependencies
+tokio = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+reqwest = { workspace = true }
+
+# Platform-specific
+slack-morphism = { workspace = true }
+octocrab = { workspace = true }

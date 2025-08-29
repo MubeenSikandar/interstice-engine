@@ -1,0 +1,48 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/interstice-core",
+    "crates/interstice-adapters",
+    "crates/interstice-api",
+    "crates/interstice-workers",
+    "crates/interstice-ml",  # Add this for ML components
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Muhammad Mubeen Sikandar <mmubeen.sikandar@gmail.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/MubeenSikandar/interstice-engine.git"
+
+[workspace.dependencies]
+# Shared dependencies across all crates
+tokio = { version = "1.35", features = ["full"] }
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Database
+sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "json"] }
+redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
+
+# HTTP/Web
+axum = "0.7"
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Platform-specific
+slack-morphism = "1.17"
+octocrab = "0.32"  # GitHub API
+
+# ML dependencies (for interstice-ml crate)
+candle-core = "0.3"
+candle-nn = "0.3"
+ort = "1.16"  # ONNX Runtime
