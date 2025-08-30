@@ -6,6 +6,8 @@ pub mod error;
 pub mod graph;
 pub mod outcome;
 pub mod types;
+pub mod storage;
+pub use storage::Storage;
 
 // Re-export main types
 pub use artifact::{Artifact, ArtifactExtractor, ArtifactType};
@@ -42,6 +44,11 @@ impl IntersticeEngine {
             predictions,
             platform,
         })
+    }
+
+    /// Extract artifacts from text content
+    pub async fn extract_artifacts(&self, content: &str, platform: Platform) -> Result<Vec<Artifact>> {
+        self.extractor.extract(content, platform).await
     }
 }
 

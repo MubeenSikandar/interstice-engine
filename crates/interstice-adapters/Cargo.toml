@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 # Internal
 interstice-core = { path = "../interstice-core" }
+interstice-ml = { path = "../interstice-ml" }
 
 # Workspace
 tokio = { workspace = true }
@@ -17,6 +18,10 @@ thiserror = { workspace = true }
 reqwest = { workspace = true }
 tracing = { workspace = true }
 slack-morphism = { workspace = true, features = ["hyper"] }
+
+# Additional dependencies
+uuid = { workspace = true }
+chrono = { workspace = true }
 
 [features]
 default = ["full-slack"]

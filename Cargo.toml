@@ -43,6 +43,7 @@ slack-morphism = { version = "2.15.0", features = ["hyper"] }
 octocrab = "0.32"  # GitHub API
 
 # ML dependencies (for interstice-ml crate)
-candle-core = "0.3"
-candle-nn = "0.3"
-ort = "1.16"  # ONNX Runtime
+candle-core = "0.9.1"
+candle-nn = "0.9.1"
+candle-transformers = "0.9.1"
+ort = "1.16.3"  # ONNX Runtime

@@ -1,3 +1,5 @@
+use interstice_core::Storage;
+
 use crate::traits::{PlatformAdapter, PlatformResponse};
 use async_trait::async_trait;
 use interstice_core::{IntersticeEngine, Platform, ProcessedArtifact};

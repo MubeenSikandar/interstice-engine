@@ -1,0 +1,122 @@
+version: "3.8"
+
+services:
+  # PostgreSQL database with pgvector extension
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: interstice-postgres
+    environment:
+      POSTGRES_DB: interstice_engine
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: root1234
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and job queues
+  redis:
+    image: redis:7-alpine
+    container_name: interstice-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Interstice API server
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    container_name: interstice-api
+    environment:
+      DATABASE_URL: postgresql://postgres:root1234@postgres:5432/interstice_engine
+      REDIS_URL: redis://redis:6379
+      HOST: 0.0.0.0
+      PORT: 3000
+      RUST_LOG: info
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./models:/models
+      - ./.env:/app/.env
+    command: ["cargo", "run", "--release", "--bin", "interstice-api"]
+
+  # Interstice Workers for background processing
+  workers:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    container_name: interstice-workers
+    environment:
+      DATABASE_URL: postgresql://postgres:root1234@postgres:5432/interstice_engine
+      REDIS_URL: redis://redis:6379
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./models:/models
+      - ./.env:/app/.env
+    command: ["cargo", "run", "--release", "--bin", "interstice-workers"]
+
+  # Prometheus for metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: interstice-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--storage.tsdb.retention.time=200h"
+      - "--web.enable-lifecycle"
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: interstice-grafana
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  default:
+    name: interstice-network
