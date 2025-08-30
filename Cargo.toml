@@ -13,7 +13,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Muhammad Mubeen Sikandar <mmubeen.sikandar@gmail.com>"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/MubeenSikandar/interstice-engine.git"
+repository = "https://github.com/MubeenSikandar/interstice-engine"
 
 [workspace.dependencies]
 # Shared dependencies across all crates
@@ -39,7 +39,7 @@ tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace"] }
 
 # Platform-specific
-slack-morphism = "1.17"
+slack-morphism = { version = "2.15.0", features = ["hyper"] }
 octocrab = "0.32"  # GitHub API
 
 # ML dependencies (for interstice-ml crate)

@@ -1,14 +1,30 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+pub mod traits;
+pub mod slack;
+
+pub use slack::SlackAdapter;
+
+pub use traits::{PlatformAdapter, PlatformResponse};
+
+use interstice_core::Platform;
+use std::collections::HashMap;
+
+/// Manages all platform adapters
+pub struct AdapterManager {
+    adapters: HashMap<Platform, Box<dyn PlatformAdapter>>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+impl AdapterManager {
+    pub fn new() -> Self {
+        Self {
+            adapters: HashMap::new(),
+        }
+    }
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+    pub fn register(&mut self, adapter: Box<dyn PlatformAdapter>) {
+        self.adapters.insert(adapter.platform(), adapter);
+    }
+
+    pub fn get(&self, platform: Platform) -> Option<&dyn PlatformAdapter> {
+        self.adapters.get(&platform).map(|b| b.as_ref())
     }
 }

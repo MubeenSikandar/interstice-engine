@@ -1,13 +1,13 @@
 [package]
 name = "interstice-adapters"
-version.workspace = true
-edition.workspace = true
+version = "0.1.0"
+edition = "2021"
 
 [dependencies]
-# Internal crates
+# Internal
 interstice-core = { path = "../interstice-core" }
 
-# Workspace dependencies
+# Workspace
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
@@ -15,7 +15,10 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 reqwest = { workspace = true }
+tracing = { workspace = true }
+slack-morphism = { workspace = true, features = ["hyper"] }
 
-# Platform-specific
-slack-morphism = { workspace = true }
-octocrab = { workspace = true }
+[features]
+default = ["full-slack"]
+simple-slack = []
+full-slack = []

@@ -1,14 +1,53 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+//! Core domain models and business logic for Interstice
+
+pub mod analytics;
+pub mod artifact;
+pub mod error;
+pub mod graph;
+pub mod outcome;
+pub mod types;
+
+// Re-export main types
+pub use artifact::{Artifact, ArtifactExtractor, ArtifactType};
+pub use error::{Error, Result};
+pub use outcome::{Outcome, OutcomeMapper, OutcomePrediction};
+pub use types::{Platform, UserId, WorkspaceId};
+
+use std::sync::Arc;
+
+/// The main engine that processes artifacts from any platform
+pub struct IntersticeEngine {
+    extractor: Arc<ArtifactExtractor>,
+    mapper: Arc<OutcomeMapper>,
+    // We'll add more components as we build them
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
+impl IntersticeEngine {
+    pub fn new() -> Self {
+        Self {
+            extractor: Arc::new(ArtifactExtractor::new()),
+            mapper: Arc::new(OutcomeMapper::new()),
+        }
     }
+
+    pub async fn process(&self, content: String, platform: Platform) -> Result<ProcessedArtifact> {
+        // Extract artifacts from content
+        let artifacts = self.extractor.extract(&content, platform).await?;
+
+        // Map to potential outcomes
+        let predictions = self.mapper.predict(&artifacts).await?;
+
+        Ok(ProcessedArtifact {
+            artifacts,
+            predictions,
+            platform,
+        })
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ProcessedArtifact {
+    pub artifacts: Vec<Artifact>,
+    pub predictions: Vec<OutcomePrediction>,
+    pub platform: Platform,
 }
