@@ -11,6 +11,7 @@ path = "src/main.rs"
 # Internal crates
 interstice-core = { path = "../interstice-core" }
 interstice-adapters = { path = "../interstice-adapters" }
+interstice-ml = { path = "../interstice-ml" }
 
 # Workspace dependencies
 tokio = { workspace = true }
@@ -22,7 +23,14 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+slack-morphism = {workspace = true}
+uuid = {workspace = true}
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "migrate"] }
 
 # Add these
 dotenv = "0.15"
 http = "1.0"  # For HeaderMap
+serde_urlencoded = "0.7"
+reqwest = { version = "0.11", features = ["json"] }
+rustls = { version = "0.23", features = ["ring"] }

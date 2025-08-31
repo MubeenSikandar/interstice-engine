@@ -1,3 +1,4 @@
+//interstice-core/src/storage.rs
 use crate::{Artifact, Outcome, Platform, Result, Error};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -6,6 +7,37 @@ use std::str::FromStr;
 /// Database-backed storage implementation
 pub struct DatabaseStorage {
     pool: PgPool,
+}
+
+#[async_trait::async_trait]
+impl Storage for DatabaseStorage {
+    async fn store_artifact(&self, artifact: &Artifact, workspace_id: Uuid) -> Result<Uuid> {
+        self.store_artifact(artifact, workspace_id).await
+    }
+    
+    async fn store_outcome(&self, outcome: &Outcome, workspace_id: Uuid) -> Result<Uuid> {
+        self.store_outcome(outcome, workspace_id).await
+    }
+    
+    async fn link_artifact_outcome(&self, artifact_id: Uuid, outcome_id: Uuid, confidence: f32) -> Result<()> {
+        self.link_artifact_outcome(artifact_id, outcome_id, confidence).await
+    }
+    
+    async fn get_artifacts(&self, workspace_id: Uuid, limit: Option<i64>) -> Result<Vec<Artifact>> {
+        self.get_artifacts(workspace_id, limit).await
+    }
+    
+    async fn get_outcomes(&self, workspace_id: Uuid) -> Result<Vec<Outcome>> {
+        self.get_outcomes(workspace_id).await
+    }
+    
+    async fn get_workspace_stats(&self, workspace_id: Uuid) -> Result<WorkspaceStats> {
+        self.get_workspace_stats(workspace_id).await
+    }
+    
+    async fn get_outcome_progress(&self, outcome_id: Uuid, days: i32) -> Result<Vec<ProgressPoint>> {
+        self.get_outcome_progress(outcome_id, days).await
+    }
 }
 
 impl DatabaseStorage {

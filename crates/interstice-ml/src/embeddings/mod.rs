@@ -5,6 +5,8 @@ use candle_transformers::models::bert::{BertModel, Config};
 use tokenizers::Tokenizer;
 use tracing::info;
 
+use crate::{convert_core_artifact_type, convert_core_platform};
+
 pub struct Embedder {
     model: Option<BertModel>,
     tokenizer: Option<Tokenizer>,
@@ -105,3 +107,4 @@ impl Embedder {
         dot_product / (norm1 * norm2)
     }
 }
+

@@ -18,6 +18,7 @@ thiserror = { workspace = true }
 reqwest = { workspace = true }
 tracing = { workspace = true }
 slack-morphism = { workspace = true, features = ["hyper"] }
+sqlx = { workspace = true }
 
 # Additional dependencies
 uuid = { workspace = true }

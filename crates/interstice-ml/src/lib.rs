@@ -4,16 +4,21 @@ pub mod inference;
 pub mod feedback;
 pub mod types;
 pub mod models;
+pub mod adapters;
 
 use std::sync::Arc;
 use uuid::Uuid;
 use anyhow::Result;
 
-pub use inference::{OutcomeEngine, EngineConfig, TextEmbedder, OutcomePredictor};
+// Export the adapter so other crates can use it
+pub use adapters::MLPredictorAdapter;
+
+// Export other public types
+pub use inference::{OutcomeEngine, EngineConfig};
+use crate::inference::{TextEmbedder, OutcomePredictor};
 use crate::training::ContinuousTrainer;
 use crate::feedback::FeedbackProcessor;
-pub use types::{OutcomePrediction, ModelMetrics};
-use interstice_core::Artifact;
+pub use types::{OutcomePrediction, ModelMetrics, Artifact};
 
 pub struct MLPipeline {
     embedder: Arc<TextEmbedder>,
@@ -33,8 +38,6 @@ impl MLPipeline {
     }
 
     pub fn connect_lazy(database_url: &str) -> Result<Self> {
-        // For lazy connection, create a dummy pipeline that will connect when first used
-        // This is a temporary solution until we implement proper lazy loading
         Ok(Self {
             embedder: Arc::new(TextEmbedder::connect_lazy().unwrap()),
             predictor: Arc::new(OutcomePredictor::connect_lazy().unwrap()),
@@ -46,32 +49,56 @@ impl MLPipeline {
     pub async fn predict_outcomes(
         &self,
         workspace_id: Uuid,
-        artifacts: &[Artifact],
+        artifacts: &[Artifact], // Using ML's Artifact type
         text: &str,
     ) -> Result<Vec<OutcomePrediction>> {
-        // 1. Generate embeddings
+        // Generate embeddings from text
         let embedding = self.embedder.embed_text(text).await?;
         
-        // 2. Get org-specific predictions
-        let predictions = self.predictor.predict(
+        // Now predictor.predict() expects ML's Artifact type
+        let predictions = self.predictor.predict_ml(
             embedding,
-            artifacts
+            artifacts  // No conversion needed - same type
         ).await?;
         
-        // 3. Learn vocabulary
+        // Learn vocabulary from the text
         self.learn_org_vocabulary(workspace_id, text).await?;
         
         Ok(predictions)
     }
 
-    async fn learn_org_vocabulary(&self, workspace_id: Uuid, text: &str) -> Result<()> {
-        // In a real implementation, this would:
-        // 1. Extract key terms from text
-        // 2. Generate embeddings for terms
-        // 3. Store in org_vocabulary table
+    // Alternative method for when you have interstice_core artifacts
+    pub async fn predict_outcomes_from_core(
+        &self,
+        workspace_id: Uuid,
+        core_artifacts: &[interstice_core::Artifact],
+        text: &str,
+    ) -> Result<Vec<OutcomePrediction>> {
+        // Convert core artifacts to ML artifacts
+        let ml_artifacts: Vec<Artifact> = core_artifacts.iter()
+            .map(|a| Artifact {
+                id: a.id.to_string(),
+                version: 1,
+                content: a.raw_text.clone(),
+                platform: convert_core_platform(&a.platform),
+                artifact_type: convert_core_artifact_type(&a.artifact_type),
+                metadata: None,
+            })
+            .collect();
         
-        // For now, just log that we would learn vocabulary
-        tracing::debug!("Would learn vocabulary for workspace {} from text: {}", workspace_id, text);
+        // Call the main predict method
+        self.predict_outcomes(workspace_id, &ml_artifacts, text).await
+    }
+
+    async fn learn_org_vocabulary(&self, workspace_id: Uuid, text: &str) -> Result<()> {
+        // Extract key terms from text for vocabulary learning
+        tracing::debug!("Learning vocabulary for workspace {} from text: {}", workspace_id, text);
+        
+        // In a production implementation, this would:
+        // 1. Tokenize and extract key terms
+        // 2. Generate embeddings for new terms
+        // 3. Store in org_vocabulary table for fine-tuning
+        
         Ok(())
     }
 
@@ -88,7 +115,42 @@ impl MLPipeline {
         self.feedback_loop.process_user_action(workspace_id, action).await
     }
 
-    pub async fn get_model_performance(&self, workspace_id: Uuid) -> Result<Option<crate::types::ModelMetrics>> {
+    pub async fn get_model_performance(&self, _workspace_id: Uuid) -> Result<Option<crate::types::ModelMetrics>> {
         self.predictor.get_model_performance().await
     }
+}
+
+// Helper functions for type conversion
+fn convert_core_platform(platform: &interstice_core::Platform) -> crate::types::Platform {
+    use crate::types::Platform;
+    match platform {
+        interstice_core::Platform::Slack => Platform::Slack,
+        interstice_core::Platform::GitHub => Platform::GitHub,
+        interstice_core::Platform::Jira => Platform::Jira,
+        interstice_core::Platform::Teams => Platform::Teams,
+        interstice_core::Platform::Asana => Platform::Asana,
+        interstice_core::Platform::VSCode => Platform::VSCode,
+        interstice_core::Platform::GoogleWorkspace => Platform::GoogleWorkspace,
+        interstice_core::Platform::Monday => Platform::Monday,
+        interstice_core::Platform::Trello => Platform::Trello,
+        interstice_core::Platform::Zoom => Platform::Zoom,
+        interstice_core::Platform::Figma => Platform::Figma,
+        interstice_core::Platform::Notion => Platform::Notion,
+    }
+}
+
+fn convert_core_artifact_type(artifact_type: &interstice_core::ArtifactType) -> crate::types::ArtifactType {
+    use crate::types::ArtifactType;
+    match artifact_type {
+        interstice_core::ArtifactType::PullRequest { .. } => ArtifactType::PullRequest,
+        interstice_core::ArtifactType::Issue { .. } => ArtifactType::Issue,
+        interstice_core::ArtifactType::Commit { .. } => ArtifactType::Commit,
+        interstice_core::ArtifactType::Document { .. } => ArtifactType::Document,
+        interstice_core::ArtifactType::Message { .. } => ArtifactType::Message,
+    }
+}
+
+// Convenience function to create an ML predictor for interstice-core
+pub async fn create_ml_predictor() -> Result<MLPredictorAdapter> {
+    MLPredictorAdapter::new().await
 }

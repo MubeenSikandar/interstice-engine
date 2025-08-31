@@ -248,6 +248,18 @@ impl OutcomePredictor {
             total_predictions: 1250,
         }))
     }
+
+    pub async fn predict_ml(
+        &self,
+        embedding: Vec<f32>,
+        artifacts: &[crate::types::Artifact], // Use ML's Artifact
+    ) -> Result<Vec<crate::types::OutcomePrediction>> {
+        // Your existing prediction logic but using ML types
+        // ... implementation ...
+        Ok(vec![])
+    }
+
+
 }
 
 /// Text embedding generator using BERT

@@ -1,5 +1,7 @@
-use interstice_core::Storage;
+//interstice-adapters/src/slack/mod.rs
+use interstice_core::{Storage, DatabaseStorage};
 use interstice_ml::MLPipeline;
+use sqlx::PgPool;
 
 use crate::traits::{PlatformAdapter, PlatformResponse};
 use async_trait::async_trait;
@@ -18,6 +20,7 @@ pub struct SlackAdapter {
     ml_pipeline: Option<Arc<MLPipeline>>,
     signing_secret: SlackSigningSecret,
     workspace_id: Option<Uuid>,
+    storage: Option<Arc<dyn Storage>>,  // Add storage field
 }
 
 impl SlackAdapter {
@@ -28,6 +31,7 @@ impl SlackAdapter {
         let token = SlackApiToken::new(SlackApiTokenValue::from(bot_token));
         let engine = Arc::new(IntersticeEngine::new());
         let signing_secret = SlackSigningSecret::from(signing_secret);
+        
 
         Self {
             client,
@@ -36,7 +40,13 @@ impl SlackAdapter {
             ml_pipeline: None,
             signing_secret,
             workspace_id: None,
+            storage: None,  // Initialize as None
         }
+    }
+
+    pub fn with_storage(mut self, pool: PgPool) -> Self {
+        self.storage = Some(Arc::new(DatabaseStorage::new(pool)) as Arc<dyn Storage>);
+        self
     }
 
     pub fn with_ml_pipeline(mut self, ml_pipeline: Arc<MLPipeline>) -> Self {
@@ -359,19 +369,40 @@ impl SlackAdapter {
     }
 
     async fn get_workspace_status(&self) -> interstice_core::Result<String> {
-        // In a real implementation, this would query the database
-        // For now, return a mock status
-        Ok(r#"📊 *Workspace Status*
+        let Some(storage) = &self.storage else {
+            return Ok("⚠️ Storage not configured".to_string());
+        };
 
-*Outcomes:* 12 active
-*Artifacts this week:* 47
-*Mapped work:* 89%
-*Unmapped work:* 11%
+        let Some(workspace_id) = self.workspace_id else {
+            return Ok("⚠️ Workspace not configured".to_string());
+        };
 
-*Top outcomes by progress:*
-1. User Activation (+15% this week)
-2. Performance Optimization (+8% this week)
-3. Security Hardening (+5% this week)"#.to_string())
+        let stats = storage.get_workspace_stats(workspace_id).await?;
+        let outcomes = storage.get_outcomes(workspace_id).await?;
+
+        Ok(format!(
+            r#"📊 *Workspace Status*
+
+*Outcomes:* {} active
+*Total Artifacts:* {}
+*Recent Activity (7 days):* {} artifacts
+*Mapped work:* {:.1}%
+*Unmapped work:* {:.1}%
+
+*Active Outcomes:*
+{}"#,
+            outcomes.len(),
+            stats.total_artifacts,
+            stats.recent_artifacts,
+            stats.mapped_work_percentage,
+            100.0 - stats.mapped_work_percentage,
+            outcomes.iter()
+                .take(5)
+                .enumerate()
+                .map(|(i, o)| format!("{}. {}", i + 1, o.name))
+                .collect::<Vec<_>>()
+                .join("\n")
+        ))
     }
 
     async fn get_weekly_digest(&self) -> interstice_core::Result<String> {
@@ -410,21 +441,52 @@ impl SlackAdapter {
 
     // Store artifacts for evidence building
     async fn store_artifacts(&self, processed: &ProcessedArtifact) -> interstice_core::Result<()> {
-        // In a real implementation, this would:
-        // 1. Store artifacts in the database
-        // 2. Build graph relationships
-        // 3. Update outcome progress
-        // 4. Trigger ML retraining if needed
-        
-        info!("Storing {} artifacts for evidence building", processed.artifacts.len());
-        
-        // For now, just log the artifacts
+        let Some(storage) = &self.storage else {
+            warn!("No storage configured, skipping artifact persistence");
+            return Ok(());
+        };
+
+        let Some(workspace_id) = self.workspace_id else {
+            warn!("No workspace_id configured, skipping artifact persistence");
+            return Ok(());
+        };
+
+        // Store each artifact
         for artifact in &processed.artifacts {
-            tracing::debug!("Artifact: {:?}", artifact);
+            match storage.store_artifact(artifact, workspace_id).await {
+                Ok(artifact_id) => {
+                    info!("Stored artifact {}: {:?}", artifact_id, artifact.artifact_type);
+                    
+                    // Link to predicted outcomes
+                    for prediction in &processed.predictions {
+                        if let Err(e) = storage.link_artifact_outcome(
+                            artifact_id,
+                            prediction.outcome_id,
+                            prediction.confidence,
+                        ).await {
+                            warn!("Failed to link artifact to outcome: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to store artifact: {}", e);
+                }
+            }
         }
-        
+
+        // Update workspace stats for monitoring
+        if let Ok(stats) = storage.get_workspace_stats(workspace_id).await {
+            info!(
+                "Workspace stats - Total artifacts: {}, Mapped work: {:.1}%",
+                stats.total_artifacts,
+                stats.mapped_work_percentage
+            );
+        }
+
         Ok(())
     }
+
+
 }
 
 #[async_trait]

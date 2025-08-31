@@ -1,3 +1,4 @@
+//interstice-api/src/routes/webhooks.rs
 use axum::{
     routing::{get, post},
     Router,
@@ -16,6 +17,6 @@ pub fn webhook_routes() -> Router<Arc<AppState>> {
         .route("/slack/health", get(handlers::slack::slack_health))
         
         // Other platform webhooks
-        .route("/github", post(handlers::github::handle_webhook))
-        .route("/jira", post(handlers::jira::handle_webhook))
+        // .route("/github", post(handlers::github::handle_webhook))
+        // .route("/jira", post(handlers::jira::handle_webhook))
 }

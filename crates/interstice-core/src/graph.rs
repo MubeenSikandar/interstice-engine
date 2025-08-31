@@ -1,9 +1,8 @@
-use crate::{Artifact, Outcome, OutcomePrediction, Result, Error};
-use crate::storage::{Storage, WorkspaceStats, ProgressPoint};
-use std::collections::{HashMap, HashSet};
+use crate::{Artifact, Result};
+use crate::traits::OutcomePrediction;
+use crate::storage::Storage;
 use std::sync::Arc;
 use uuid::Uuid;
-use chrono::{DateTime, Utc, Duration};
 use tracing::info;
 
 /// Evidence graph for tracking work-outcome relationships
@@ -23,7 +22,8 @@ impl EvidenceGraph {
         artifacts: &[Artifact],
         predictions: &[OutcomePrediction],
     ) -> Result<()> {
-        info!("Building relationships for {} artifacts and {} predictions", artifacts.len(), predictions.len());
+        info!("Building relationships for {} artifacts and {} predictions", 
+              artifacts.len(), predictions.len());
 
         for artifact in artifacts {
             // Store the artifact
@@ -31,7 +31,6 @@ impl EvidenceGraph {
             
             // Link to outcomes based on predictions
             for prediction in predictions {
-                // Use the outcome_id directly since it's already a Uuid
                 self.storage.link_artifact_outcome(
                     artifact_id,
                     prediction.outcome_id,
@@ -40,7 +39,8 @@ impl EvidenceGraph {
             }
         }
 
-        info!("Successfully built {} artifact-outcome relationships", artifacts.len() * predictions.len());
+        info!("Successfully built {} artifact-outcome relationships", 
+              artifacts.len() * predictions.len());
         Ok(())
     }
 }
