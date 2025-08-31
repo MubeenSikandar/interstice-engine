@@ -1,3 +1,4 @@
+//interstice-ml/src/models/mod.rs
 use uuid::Uuid;
 use anyhow::Result;
 use tracing::info;
@@ -68,7 +69,7 @@ impl OrgModel {
         // For now, return mock predictions
         Ok(vec![
             crate::types::OutcomePrediction {
-                outcome_id: Uuid::new_v4(),
+                outcome_id: Uuid::new_v4().to_string(),
                 outcome_name: "User Onboarding".to_string(),
                 confidence: 0.75,
                 reasoning: Some("Text contains onboarding-related terms".to_string()),

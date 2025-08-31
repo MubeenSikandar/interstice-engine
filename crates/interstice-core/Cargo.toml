@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 
+
 [dependencies]
 # Use workspace dependencies
 tokio = { workspace = true }
@@ -17,6 +18,9 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 sqlx = { workspace = true }
 redis = { workspace = true }
+bigdecimal = { workspace = true }
+
+
 
 # Core-specific dependencies
 regex = "1.10"

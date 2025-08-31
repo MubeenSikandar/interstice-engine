@@ -1,9 +1,10 @@
+//interstice-ml/src/feedback/mod.rs
 use uuid::Uuid;
 use anyhow::Result;
 use sqlx::PgPool;
 use tracing::{info, debug};
 
-use crate::types::{UserAction, TrainingExample};
+use crate::types::{UserAction, ActionType, TrainingExample};
 
 pub struct FeedbackProcessor {
     db: PgPool,
@@ -29,43 +30,40 @@ impl FeedbackProcessor {
     ) -> Result<()> {
         debug!("Processing user action: {:?} for workspace {}", action.action_type, workspace_id);
         
-        match action.action_type.as_str() {
-            "accepted" => {
+        // Parse UUIDs from strings
+        let artifact_id = Uuid::parse_str(&action.artifact_id)?;
+        let outcome_id = Uuid::parse_str(&action.outcome_id)?;
+        
+        match action.action_type {
+            ActionType::Accept => {
                 self.record_feedback(
                     workspace_id,
-                    action.artifact_id,
-                    action.outcome_id,
+                    artifact_id,
+                    Some(outcome_id),
                     "accepted",
                     1.0
                 ).await?;
             }
-            
-            "rejected" => {
-                if let Some(outcome_id) = action.outcome_id {
-                    self.record_feedback(
-                        workspace_id,
-                        action.artifact_id,
-                        Some(outcome_id),
-                        "rejected",
-                        -1.0
-                    ).await?;
-                }
+            ActionType::Reject => {
+                self.record_feedback(
+                    workspace_id,
+                    artifact_id,
+                    Some(outcome_id),
+                    "rejected",
+                    -1.0
+                ).await?;
             }
-            
-            "corrected" => {
-                if let Some(outcome_id) = action.outcome_id {
-                    self.record_feedback(
-                        workspace_id,
-                        action.artifact_id,
-                        Some(outcome_id),
-                        "corrected",
-                        1.0
-                    ).await?;
-                }
+            ActionType::Correct => {
+                self.record_feedback(
+                    workspace_id,
+                    artifact_id,
+                    Some(outcome_id),
+                    "corrected",
+                    1.0
+                ).await?;
             }
-            
             _ => {
-                info!("Unknown action type: {}", action.action_type);
+                info!("Unhandled action type: {:?}", action.action_type);
             }
         }
         

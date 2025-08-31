@@ -28,8 +28,8 @@ CREATE TABLE outcomes (
     workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
     description TEXT,
-    target_value DECIMAL,
-    current_value DECIMAL,
+    target_value DOUBLE PRECISION,
+    current_value DOUBLE PRECISION,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -38,7 +38,7 @@ CREATE TABLE outcomes (
 CREATE TABLE artifact_outcomes (
     artifact_id UUID REFERENCES artifacts(id) ON DELETE CASCADE,
     outcome_id UUID REFERENCES outcomes(id) ON DELETE CASCADE,
-    confidence DECIMAL DEFAULT 0.5,
+    confidence DOUBLE PRECISION DEFAULT 0.5,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (artifact_id, outcome_id)
 );

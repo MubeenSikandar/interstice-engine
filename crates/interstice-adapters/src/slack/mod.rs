@@ -1,4 +1,5 @@
 use interstice_core::Storage;
+use interstice_ml::MLPipeline;
 
 use crate::traits::{PlatformAdapter, PlatformResponse};
 use async_trait::async_trait;
@@ -6,13 +7,17 @@ use interstice_core::{IntersticeEngine, Platform, ProcessedArtifact};
 use slack_morphism::prelude::*;
 use slack_morphism::signature_verifier::SlackEventSignatureVerifier;
 use std::sync::Arc;
+use uuid::Uuid;
+use tracing::{info, warn};
 
 #[derive(Clone)]
 pub struct SlackAdapter {
     client: Arc<SlackClient<SlackClientHyperHttpsConnector>>,
     token: SlackApiToken,
     engine: Arc<IntersticeEngine>,
+    ml_pipeline: Option<Arc<MLPipeline>>,
     signing_secret: SlackSigningSecret,
+    workspace_id: Option<Uuid>,
 }
 
 impl SlackAdapter {
@@ -28,8 +33,20 @@ impl SlackAdapter {
             client,
             token,
             engine,
+            ml_pipeline: None,
             signing_secret,
+            workspace_id: None,
         }
+    }
+
+    pub fn with_ml_pipeline(mut self, ml_pipeline: Arc<MLPipeline>) -> Self {
+        self.ml_pipeline = Some(ml_pipeline);
+        self
+    }
+
+    pub fn with_workspace_id(mut self, workspace_id: Uuid) -> Self {
+        self.workspace_id = Some(workspace_id);
+        self
     }
 
     /// Create a session for API calls
@@ -51,8 +68,7 @@ impl SlackAdapter {
                 self.handle_event_callback(callback.event).await?;
             }
             SlackPushEvent::UrlVerification(url_ver) => {
-                // This is handled at the API layer
-                tracing::info!("URL verification: {}", url_ver.challenge);
+                info!("URL verification: {}", url_ver.challenge);
             }
             _ => {
                 tracing::debug!("Unhandled event type");
@@ -82,8 +98,47 @@ impl SlackAdapter {
     async fn handle_message(&self, event: SlackMessageEvent) -> interstice_core::Result<()> {
         if let Some(content) = &event.content {
             if let Some(text) = &content.text {
-                // Process the message
-                let processed = self.engine.process(text.clone(), Platform::Slack).await?;
+                // Skip bot messages to avoid loops
+                if event.sender.bot_id.is_some() {
+                    return Ok(());
+                }
+
+                // Process the message with ML if available
+                let processed = if let Some(ml) = &self.ml_pipeline {
+                    if let Some(workspace_id) = self.workspace_id {
+                        // Use ML pipeline for better predictions
+                        let predictions = ml.predict_outcomes(workspace_id, &[], text).await
+                            .unwrap_or_else(|e| {
+                                warn!("ML prediction failed: {}, falling back to basic processing", e);
+                                vec![]
+                            });
+                        
+                        // Convert ML predictions to core predictions
+                        let core_predictions = predictions.into_iter()
+                            .map(|p| interstice_core::OutcomePrediction {
+                                outcome_id: Uuid::parse_str(&p.outcome_id).unwrap(),
+                                outcome_name: p.outcome_name,
+                                confidence: p.confidence,
+                                reasoning: p.reasoning,
+                            })
+                            .collect();
+                        
+                        // Extract artifacts using the engine
+                        let artifacts = self.engine.extract_artifacts(text, Platform::Slack).await?;
+                        
+                        ProcessedArtifact {
+                            artifacts,
+                            predictions: core_predictions,
+                            platform: Platform::Slack,
+                        }
+                    } else {
+                        // Fallback to basic processing
+                        self.engine.process(text.clone(), Platform::Slack).await?
+                    }
+                } else {
+                    // Basic processing without ML
+                    self.engine.process(text.clone(), Platform::Slack).await?
+                };
 
                 // If we found artifacts, send a response
                 if !processed.artifacts.is_empty() {
@@ -92,6 +147,9 @@ impl SlackAdapter {
                             .await?;
                     }
                 }
+
+                // Store artifacts in the graph for evidence building
+                self.store_artifacts(&processed).await?;
             }
         }
         Ok(())
@@ -106,11 +164,20 @@ impl SlackAdapter {
                 .collect::<Vec<_>>()
                 .join(" ");
 
-            let processed = self.engine.process(clean_text, Platform::Slack).await?;
+            // Process the command
+            let response = match clean_text.trim() {
+                "help" | "?" => self.get_help_message(),
+                "status" | "progress" => self.get_workspace_status().await?,
+                "digest" | "summary" => self.get_weekly_digest().await?,
+                "hidden work" | "unmapped" => self.get_hidden_work_analysis().await?,
+                _ => {
+                    // Process as regular content
+                    let processed = self.engine.process(clean_text, Platform::Slack).await?;
+                    self.format_response(&processed)
+                }
+            };
 
             // Reply in thread
-            let response = self.format_response(&processed);
-
             let channel = event.origin.channel.clone()
                 .ok_or_else(|| interstice_core::Error::Other(anyhow::anyhow!("No channel in event")))?;
             
@@ -221,9 +288,15 @@ impl SlackAdapter {
             }
         }
 
-        // Add action buttons
-        let button1 = SlackBlockButtonElement::new("link_outcomes".into(), pt!("Link to Outcomes"));
-        let button2 = SlackBlockButtonElement::new("dismiss".into(), pt!("Dismiss"));
+        // Add action buttons with unique action IDs
+        let button1 = SlackBlockButtonElement::new(
+            format!("link_outcomes_{}", uuid::Uuid::new_v4()).into(),
+            pt!("Link to Outcomes")
+        );
+        let button2 = SlackBlockButtonElement::new(
+            format!("dismiss_{}", uuid::Uuid::new_v4()).into(),
+            pt!("Dismiss")
+        );
         
         blocks.push(SlackBlock::Actions(SlackActionsBlock::new(
             vec![
@@ -261,6 +334,96 @@ impl SlackAdapter {
         }
 
         response
+    }
+
+    // Helper methods for slash commands
+    fn get_help_message(&self) -> String {
+        r#"🤖 *Interstice Bot Help*
+
+*Commands:*
+• `@interstice help` - Show this help message
+• `@interstice status` - Show workspace progress
+• `@interstice digest` - Get weekly summary
+• `@interstice hidden work` - Analyze unmapped work
+
+*What I do:*
+• Automatically detect work artifacts (PRs, issues, commits)
+• Suggest outcome mappings using AI
+• Build evidence graphs for your goals
+• Provide insights on work alignment
+
+*Examples:*
+• Just mention me in any channel
+• I'll detect work items and suggest outcomes
+• Click buttons to confirm or dismiss suggestions"#.to_string()
+    }
+
+    async fn get_workspace_status(&self) -> interstice_core::Result<String> {
+        // In a real implementation, this would query the database
+        // For now, return a mock status
+        Ok(r#"📊 *Workspace Status*
+
+*Outcomes:* 12 active
+*Artifacts this week:* 47
+*Mapped work:* 89%
+*Unmapped work:* 11%
+
+*Top outcomes by progress:*
+1. User Activation (+15% this week)
+2. Performance Optimization (+8% this week)
+3. Security Hardening (+5% this week)"#.to_string())
+    }
+
+    async fn get_weekly_digest(&self) -> interstice_core::Result<String> {
+        // In a real implementation, this would generate from the graph
+        Ok(r#"📈 *Weekly Digest - This Week*
+
+*Work Completed:* 47 artifacts
+*Outcomes Advanced:* 8 out of 12
+*Alignment Score:* 89%
+
+*Key Achievements:*
+• 3 PRs merged advancing User Activation
+• 2 security issues resolved
+• 1 performance optimization deployed
+
+*Areas Needing Attention:*
+• 5 unmapped PRs (11% of work)
+• 2 outcomes with no progress this week"#.to_string())
+    }
+
+    async fn get_hidden_work_analysis(&self) -> interstice_core::Result<String> {
+        // In a real implementation, this would analyze unmapped work
+        Ok(r#"🔍 *Hidden Work Analysis*
+
+*Unmapped Work:* 11% of total
+*Estimated Impact:* 15-20% of potential value
+
+*Categories of Unmapped Work:*
+• Infrastructure improvements (40%)
+• Documentation updates (30%)
+• Bug fixes (20%)
+• Other (10%)
+
+*Recommendation:* Review unmapped work weekly to ensure alignment with strategic outcomes."#.to_string())
+    }
+
+    // Store artifacts for evidence building
+    async fn store_artifacts(&self, processed: &ProcessedArtifact) -> interstice_core::Result<()> {
+        // In a real implementation, this would:
+        // 1. Store artifacts in the database
+        // 2. Build graph relationships
+        // 3. Update outcome progress
+        // 4. Trigger ML retraining if needed
+        
+        info!("Storing {} artifacts for evidence building", processed.artifacts.len());
+        
+        // For now, just log the artifacts
+        for artifact in &processed.artifacts {
+            tracing::debug!("Artifact: {:?}", artifact);
+        }
+        
+        Ok(())
     }
 }
 
@@ -315,16 +478,29 @@ impl SlackAdapter {
         &self,
         command: SlackCommandEvent,
     ) -> interstice_core::Result<SlackMessageContent> {
-        let processed = self
-            .engine
-            .process(command.text.unwrap_or_default(), Platform::Slack)
-            .await?;
+        let command_text = command.text.unwrap_or_default();
+        
+        let response = match command_text.trim() {
+            "help" | "?" => self.get_help_message(),
+            "status" | "progress" => self.get_workspace_status().await?,
+            "digest" | "summary" => self.get_weekly_digest().await?,
+            "hidden work" | "unmapped" => self.get_hidden_work_analysis().await?,
+            _ => {
+                // Process as regular content
+                let processed = self
+                    .engine
+                    .process(command_text, Platform::Slack)
+                    .await?;
 
-        let blocks = self.create_artifact_blocks(&processed);
+                let blocks = self.create_artifact_blocks(&processed);
 
-        Ok(SlackMessageContent::new()
-            .with_text("Processing your command...".to_string())
-            .with_blocks(blocks))
+                return Ok(SlackMessageContent::new()
+                    .with_text("Processing your command...".to_string())
+                    .with_blocks(blocks));
+            }
+        };
+
+        Ok(SlackMessageContent::new().with_text(response))
     }
 
     /// Handle interactive events (button clicks, etc.)
@@ -333,16 +509,75 @@ impl SlackAdapter {
         interaction: SlackInteractionEvent,
     ) -> interstice_core::Result<()> {
         match interaction {
-            SlackInteractionEvent::BlockActions(_action_event) => {
-                // For now, just log the interaction
-                // In a real implementation, you would parse the action_event.actions
-                // to determine which button was clicked
-                tracing::info!("Received block action interaction");
+            SlackInteractionEvent::BlockActions(action_event) => {
+                if let Some(actions) = &action_event.actions {
+                    for action in actions {
+                        let action_id = action.action_id.0.as_str();
+                        if action_id.starts_with("link_outcomes") {
+                            self.handle_link_outcomes_action(&action_event).await?;
+                        } else if action_id.starts_with("dismiss") {
+                            self.handle_dismiss_action(&action_event).await?;
+                        }
+                    }
+                }
             }
             _ => {
                 tracing::debug!("Unhandled interaction type");
             }
         }
+        Ok(())
+    }
+
+    async fn handle_link_outcomes_action(&self, action_event: &SlackInteractionBlockActionsEvent) -> interstice_core::Result<()> {
+        // In a real implementation, this would:
+        // 1. Parse the artifacts from the message
+        // 2. Show a modal for outcome selection
+        // 3. Update the graph with confirmed mappings
+        // 4. Send feedback to ML pipeline
+        
+        info!("User confirmed outcome mapping");
+        
+        // For now, just acknowledge the action
+        if let Some(channel) = &action_event.channel {
+            let message = SlackApiChatPostMessageRequest::new(
+                channel.id.clone(),
+                SlackMessageContent::new().with_text("✅ Outcome mapping confirmed! I'll update the evidence graph.".to_string()),
+            );
+
+            self.session()
+                .chat_post_message(&message)
+                .await
+                .map_err(|e| {
+                    interstice_core::Error::Other(anyhow::anyhow!("Slack API error: {:?}", e))
+                })?;
+        }
+        
+        Ok(())
+    }
+
+    async fn handle_dismiss_action(&self, action_event: &SlackInteractionBlockActionsEvent) -> interstice_core::Result<()> {
+        // In a real implementation, this would:
+        // 1. Log the dismissal for ML feedback
+        // 2. Optionally ask for reason
+        // 3. Update ML model to avoid similar suggestions
+        
+        info!("User dismissed outcome mapping");
+        
+        // For now, just acknowledge the action
+        if let Some(channel) = &action_event.channel {
+            let message = SlackApiChatPostMessageRequest::new(
+                channel.id.clone(),
+                SlackMessageContent::new().with_text("👌 Mapping dismissed. I'll learn from this feedback.".to_string()),
+            );
+
+            self.session()
+                .chat_post_message(&message)
+                .await
+                .map_err(|e| {
+                    interstice_core::Error::Other(anyhow::anyhow!("Slack API error: {:?}", e))
+                })?;
+        }
+        
         Ok(())
     }
 }

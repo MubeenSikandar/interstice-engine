@@ -18,6 +18,9 @@ thiserror = "1.0"
 tracing = "0.1"
 uuid = { version = "1.6", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+parking_lot = "0.12.4"
+rand = "0.9.2"
+rand_distr = "0.5.1"
 
 # Database
 sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "json"] }
@@ -27,4 +30,6 @@ candle-core = "0.9.1"
 candle-nn = "0.9.1"
 candle-transformers = "0.9.1"
 tokenizers = "0.15"
+ort = "1.16.3" 
+ndarray = "0.15.6"
 

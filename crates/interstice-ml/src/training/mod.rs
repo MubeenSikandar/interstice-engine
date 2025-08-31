@@ -1,3 +1,4 @@
+//interstice-ml/src/training/mod.rs
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -100,9 +101,9 @@ impl ContinuousTrainer {
         let metrics = model.evaluate().await?;
         
         // 5. Save if improved
-        if metrics.accuracy > model.best_accuracy {
+        if metrics.accuracy > model.best_accuracy as f64 {
             self.save_model(workspace_id, model).await?;
-            model.best_accuracy = metrics.accuracy;
+            model.best_accuracy = metrics.accuracy as f32;
         }
         
         Ok(())

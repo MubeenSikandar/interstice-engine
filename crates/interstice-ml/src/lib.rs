@@ -6,19 +6,17 @@ pub mod types;
 pub mod models;
 
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use uuid::Uuid;
 use anyhow::Result;
 
-use crate::embeddings::Embedder;
+pub use inference::{OutcomeEngine, EngineConfig, TextEmbedder, OutcomePredictor};
 use crate::training::ContinuousTrainer;
-use crate::inference::OutcomePredictor;
 use crate::feedback::FeedbackProcessor;
-use crate::types::OutcomePrediction;
+pub use types::{OutcomePrediction, ModelMetrics};
 use interstice_core::Artifact;
 
 pub struct MLPipeline {
-    embedder: Arc<Embedder>,
+    embedder: Arc<TextEmbedder>,
     predictor: Arc<OutcomePredictor>,
     trainer: Arc<ContinuousTrainer>,
     feedback_loop: Arc<FeedbackProcessor>,
@@ -27,8 +25,8 @@ pub struct MLPipeline {
 impl MLPipeline {
     pub async fn new(database_url: &str) -> Result<Self> {
         Ok(Self {
-            embedder: Arc::new(Embedder::new().await?),
-            predictor: Arc::new(OutcomePredictor::new().await?),
+            embedder: Arc::new(TextEmbedder::connect_lazy()?),
+            predictor: Arc::new(OutcomePredictor::connect_lazy()?),
             trainer: Arc::new(ContinuousTrainer::new(database_url).await?),
             feedback_loop: Arc::new(FeedbackProcessor::new_with_db(database_url).await?),
         })
@@ -38,7 +36,7 @@ impl MLPipeline {
         // For lazy connection, create a dummy pipeline that will connect when first used
         // This is a temporary solution until we implement proper lazy loading
         Ok(Self {
-            embedder: Arc::new(Embedder::connect_lazy().unwrap()),
+            embedder: Arc::new(TextEmbedder::connect_lazy().unwrap()),
             predictor: Arc::new(OutcomePredictor::connect_lazy().unwrap()),
             trainer: Arc::new(ContinuousTrainer::connect_lazy(database_url).unwrap()),
             feedback_loop: Arc::new(FeedbackProcessor::new()),
@@ -56,7 +54,6 @@ impl MLPipeline {
         
         // 2. Get org-specific predictions
         let predictions = self.predictor.predict(
-            workspace_id,
             embedding,
             artifacts
         ).await?;
@@ -92,6 +89,6 @@ impl MLPipeline {
     }
 
     pub async fn get_model_performance(&self, workspace_id: Uuid) -> Result<Option<crate::types::ModelMetrics>> {
-        self.predictor.get_model_performance(workspace_id).await
+        self.predictor.get_model_performance().await
     }
 }

@@ -7,3 +7,19 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Internal crates
+interstice-core = { path = "../interstice-core" }
+interstice-ml = { path = "../interstice-ml" }
+
+# Workspace dependencies
+tokio = { workspace = true, features = ["full", "signal"] }
+sqlx = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+dotenvy = "0.15"
+
+# Platform-specific
+slack-morphism = { workspace = true, features = ["hyper"] }
