@@ -27,4 +27,18 @@ impl AdapterManager {
     pub fn get(&self, platform: Platform) -> Option<&dyn PlatformAdapter> {
         self.adapters.get(&platform).map(|b| b.as_ref())
     }
+
+    pub fn len(&self) -> usize {
+        self.adapters.len()
+    }
+    
+    /// Check if there are no adapters registered
+    pub fn is_empty(&self) -> bool {
+        self.adapters.is_empty()
+    }
+    
+    // Keep the existing count() method for backward compatibility
+    pub fn count(&self) -> usize {
+        self.len()
+    }
 }

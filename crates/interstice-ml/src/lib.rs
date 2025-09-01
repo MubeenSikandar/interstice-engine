@@ -1,3 +1,4 @@
+//interstice-ml/src/lib.rs
 pub mod embeddings;
 pub mod training;
 pub mod inference;

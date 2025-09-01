@@ -2,7 +2,7 @@ use axum::http::{
     header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE},
     HeaderValue, Method,
 };
-use tower_http::cors::{Any, CorsLayer};
+use tower_http::cors::{CorsLayer};
 
 pub fn cors_layer() -> CorsLayer {
     let origins = std::env::var("ALLOWED_ORIGINS")
