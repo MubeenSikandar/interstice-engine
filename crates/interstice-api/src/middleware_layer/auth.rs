@@ -4,8 +4,7 @@ use axum::{
     extract::{Request, State},
     http::{header, StatusCode},
     middleware::Next,
-    response::{IntoResponse, Response},
-    Json,
+    response::Response
 };
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
@@ -14,15 +13,48 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc, Duration};
 use tracing::{info, warn, error};
 use crate::AppState;
+use once_cell::sync::Lazy;
+use std::env;
 
-// JWT Configuration
-const JWT_SECRET_ENV: &str = "JWT_SECRET";
-const JWT_ISSUER: &str = "interstice-api";
-const JWT_AUDIENCE: &str = "interstice-client";
-const ACCESS_TOKEN_DURATION_MINS: i64 = 15;
-const REFRESH_TOKEN_DURATION_DAYS: i64 = 30;
-const API_KEY_HEADER: &str = "X-API-Key";
-const REQUEST_ID_HEADER: &str = "X-Request-Id";
+pub struct AuthConfig {
+    pub jwt_secret: String,
+    pub jwt_issuer: String,
+    pub jwt_audience: String,
+    pub access_token_duration_mins: i64,
+    pub refresh_token_duration_days: i64,
+    pub api_key_header: String,
+    pub request_id_header: String,
+    pub service_secret: Option<String>,
+}
+
+impl AuthConfig {
+    fn from_env() -> Self {
+        Self {
+            jwt_secret: env::var("JWT_SECRET")
+                .expect("JWT_SECRET must be set"),
+            jwt_issuer: env::var("JWT_ISSUER")
+                .unwrap_or_else(|_| "interstice-api".to_string()),
+            jwt_audience: env::var("JWT_AUDIENCE")
+                .unwrap_or_else(|_| "interstice-client".to_string()),
+            access_token_duration_mins: env::var("ACCESS_TOKEN_DURATION_MINS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(15),
+            refresh_token_duration_days: env::var("REFRESH_TOKEN_DURATION_DAYS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30),
+            api_key_header: env::var("API_KEY_HEADER")
+                .unwrap_or_else(|_| "X-API-Key".to_string()),
+            request_id_header: env::var("REQUEST_ID_HEADER")
+                .unwrap_or_else(|_| "X-Request-Id".to_string()),
+            service_secret: env::var("SERVICE_SECRET").ok(),
+        }
+    }
+}
+
+pub static AUTH_CONFIG: Lazy<AuthConfig> = Lazy::new(AuthConfig::from_env);
+
 
 // Token types
 #[derive(Debug, Serialize, Deserialize)]
@@ -140,7 +172,7 @@ async fn authenticate_request(
     }
 
     // Try API key authentication
-    if let Some(api_key_header) = request.headers().get(API_KEY_HEADER) {
+    if let Some(api_key_header) = request.headers().get(AUTH_CONFIG.api_key_header.clone()) {
         if let Ok(api_key) = api_key_header.to_str() {
             return authenticate_api_key(state, api_key, request_id).await;
         }
@@ -165,11 +197,7 @@ async fn authenticate_jwt(
     request_id: &str,
 ) -> Result<AuthContext, StatusCode> {  // Changed from Result<AuthContext, Response>
     // Get JWT secret from environment
-    let secret = std::env::var(JWT_SECRET_ENV)
-        .map_err(|_| {
-            error!("JWT_SECRET not configured");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let secret = AUTH_CONFIG.jwt_secret.clone();
 
     // Decode and validate JWT
     let token_data = decode::<Claims>(
@@ -303,13 +331,12 @@ pub fn generate_jwt_token(
     roles: Vec<String>,
     token_type: TokenType,
 ) -> Result<String, jsonwebtoken::errors::Error> {
-    let secret = std::env::var(JWT_SECRET_ENV)
-        .expect("JWT_SECRET must be set");
+    let secret = AUTH_CONFIG.jwt_secret.clone();
 
     let duration = match token_type {
-        TokenType::Access => Duration::minutes(ACCESS_TOKEN_DURATION_MINS),
-        TokenType::Refresh => Duration::days(REFRESH_TOKEN_DURATION_DAYS),
-        _ => Duration::minutes(ACCESS_TOKEN_DURATION_MINS),
+        TokenType::Access => Duration::minutes(AUTH_CONFIG.access_token_duration_mins),
+        TokenType::Refresh => Duration::days(AUTH_CONFIG.refresh_token_duration_days),
+        _ => Duration::minutes(AUTH_CONFIG.access_token_duration_mins),
     };
 
     let now = Utc::now();
@@ -320,8 +347,8 @@ pub fn generate_jwt_token(
         exp: expiration.timestamp(),
         iat: now.timestamp(),
         nbf: now.timestamp(),
-        iss: JWT_ISSUER.to_string(),
-        aud: JWT_AUDIENCE.to_string(),
+        iss: AUTH_CONFIG.jwt_issuer.to_string(),
+        aud: AUTH_CONFIG.jwt_audience.to_string(),
         jti: Uuid::new_v4().to_string(),
         token_type,
         workspace_id,
@@ -456,7 +483,7 @@ fn hash_api_key(key: &str) -> String {
 fn extract_or_generate_request_id(request: &Request) -> String {
     request
         .headers()
-        .get(REQUEST_ID_HEADER)
+        .get(AUTH_CONFIG.request_id_header.clone())
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string())
         .unwrap_or_else(|| Uuid::new_v4().to_string())

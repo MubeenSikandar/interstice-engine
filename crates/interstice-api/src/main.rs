@@ -11,12 +11,20 @@ use uuid::Uuid;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tower_http::trace::TraceLayer;
 use tracing::{info, error, warn};
 
 mod routes;
 mod handlers;
 mod middleware_layer;
+
+// Import middleware functions from middleware_layer module
+use middleware_layer::{
+    cors_layer,
+    request_id_middleware,
+    logging_middleware,
+    security_headers_middleware,
+    create_middleware_stack,
+};
 
 pub struct AppState {
     /// Manages all platform adapters dynamically
@@ -204,13 +212,14 @@ async fn initialize_ml_components(
         .expect("DATABASE_URL must be set");
     
     // Initialize ML pipeline
+    let config = interstice_ml::PipelineConfig::production(&database_url);
     let ml_pipeline = Arc::new(
-        MLPipeline::new(&database_url).await
+        MLPipeline::new(config).await
             .expect("Failed to initialize ML pipeline")
     );
     
     // Initialize ML predictor adapter
-    let ml_predictor = match MLPredictorAdapter::new().await {
+    let ml_predictor = match MLPredictorAdapter::with_defaults().await {
         Ok(predictor) => {
             info!("ML predictor initialized successfully");
             Arc::new(predictor) as Arc<dyn MLPredictor>
@@ -398,24 +407,34 @@ async fn monitor_system_health(state: &Arc<AppState>) {
     // }
 }
 
-/// Build the application router
+/// Build the application router with comprehensive middleware
 fn build_router(state: Arc<AppState>) -> Router {
-    Router::new()
-        // Health check routes
+    // Create the base application with all middleware
+    let app = Router::new()
+        // Health check routes (public, minimal middleware)
         .nest("/health", routes::health_routes())
         
-        // API routes (protected)
-        .nest("/api/v1", 
-            routes::api_routes()
-        )
+        // API routes (protected with full middleware stack)
+        .nest("/api/v1", routes::api_routes())
         
-        // Webhook routes (public but verified)
+        // Webhook routes (public but with signature verification)
         .nest("/webhooks", routes::webhook_routes())
         
-        // Add middleware
-        .layer(middleware_layer::cors_layer())
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        // Add global middleware that applies to all routes
+        .layer(middleware::from_fn(security_headers_middleware))
+        .layer(middleware::from_fn(logging_middleware))
+        .layer(middleware::from_fn(request_id_middleware))
+        
+        // Add the comprehensive middleware stack for compression, tracing, etc.
+        .layer(create_middleware_stack())
+        
+        // Add CORS as the outermost layer so it applies first
+        .layer(cors_layer())
+        
+        // Attach the application state
+        .with_state(state);
+    
+    app
 }
 
 /// Start the HTTP server

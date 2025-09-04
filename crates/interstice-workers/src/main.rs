@@ -23,7 +23,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Connected to database");
 
     // Initialize ML pipeline
-    let ml_pipeline = Arc::new(MLPipeline::connect_lazy(&database_url)?);
+    let config = interstice_ml::PipelineConfig::production(&database_url);
+    let ml_pipeline = Arc::new(MLPipeline::new(config).await?);
     info!("ML pipeline initialized");
 
     // Initialize Interstice engine
