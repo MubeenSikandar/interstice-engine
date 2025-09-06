@@ -3,6 +3,8 @@ use async_trait::async_trait;
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
 
+use crate::types::Priority;
+
 #[async_trait]
 pub trait MLPredictor: Send + Sync {
     async fn predict_outcomes(
@@ -17,6 +19,9 @@ pub struct OutcomePrediction {
     pub outcome_name: String,
     pub confidence: f32,
     pub reasoning: Option<String>,
+    pub suggested_targets: Vec<String>,
+    pub estimated_impact: f64,
+    pub recommended_priority: Priority,
 }
 
 // Platform conversion trait

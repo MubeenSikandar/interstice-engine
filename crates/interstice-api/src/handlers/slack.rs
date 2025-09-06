@@ -5,8 +5,8 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use interstice_adapters::SlackAdapter;
-use interstice_core::{Platform, ProcessedArtifact};
+use interstice_adapters::{traits::{EventMetadata, EventType, PlatformAdapter, PlatformEvent}, SlackAdapter};
+use interstice_core::{Platform, ProcessedData};
 use serde::{Deserialize, Serialize};
 use slack_morphism::prelude::*;
 use std::sync::Arc;
@@ -184,7 +184,15 @@ pub async fn handle_events(
                 })?;
 
             // Process and get artifacts
-            adapter.handle_event(slack_event).await.map_err(|e| {
+            adapter.process_event(PlatformEvent {
+                id: Uuid::new_v4(),
+                platform: Platform::Slack,
+                event_type: EventType::MessageNew,
+                workspace_id: payload.team_id.as_ref().and_then(|id| id.parse().ok()),
+                timestamp: chrono::Utc::now(),
+                raw_data: serde_json::to_value(slack_event).unwrap(),
+                metadata: EventMetadata::default(),
+            }).await.map_err(|e| {
                 error!("Error processing Slack event: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
@@ -200,18 +208,32 @@ pub async fn handle_events(
             
             track_event_metrics(metrics, &state).await;
             
-            ProcessedArtifact {
+            ProcessedData {
                 artifacts: vec![],
                 predictions: vec![],
+                outcomes: vec![],
+                processing_results: vec![],
                 platform: Platform::Slack,
+                metadata: interstice_core::ProcessingMetadata {
+                    duration: std::time::Duration::from_millis(0),
+                    timestamp: chrono::Utc::now(),
+                    engine_version: "1.0.0".to_string(),
+                },
             }
         }
         None => {
             warn!("No event data in payload");
-            ProcessedArtifact {
+            ProcessedData {
                 artifacts: vec![],
                 predictions: vec![],
+                outcomes: vec![],
+                processing_results: vec![],
                 platform: Platform::Slack,
+                metadata: interstice_core::ProcessingMetadata {
+                    duration: std::time::Duration::from_millis(0),
+                    timestamp: chrono::Utc::now(),
+                    engine_version: "1.0.0".to_string(),
+                },
             }
         }
     };
@@ -473,10 +495,10 @@ pub async fn handle_slash_commands(
     );
 
     // Process the slash command
-    let response = adapter.handle_slash_command(command).await.map_err(|e| {
-        error!("Error processing slash command: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let response = serde_json::json!({
+        "response_type": "ephemeral",
+        "text": "Slash command processing not yet implemented"
+    });
 
     Ok(Json(response))
 }
@@ -517,10 +539,7 @@ pub async fn handle_interactions(
         })?;
 
     // Process the interaction
-    adapter.handle_interaction(payload).await.map_err(|e| {
-        error!("Error processing interaction: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    info!("Interaction received: {:?}", payload);
 
     // Return acknowledgment
     Ok(Json(serde_json::json!({ "ok": true })))
@@ -569,7 +588,11 @@ fn verify_slack_request(
     }
 
     // Verify signature
-    if !adapter.verify_signature(timestamp, signature, body) {
+    let mut headers_map = std::collections::HashMap::new();
+    headers_map.insert("x-slack-request-timestamp".to_string(), timestamp.to_string());
+    headers_map.insert("x-slack-signature".to_string(), signature.to_string());
+    
+    if !adapter.verify_webhook(&headers_map, body.as_bytes()).unwrap_or(false) {
         warn!("Invalid Slack signature");
         return Err(StatusCode::UNAUTHORIZED);
     }
@@ -628,7 +651,7 @@ async fn track_event_metrics(metrics: SlackEventMetrics, state: &Arc<AppState>) 
 /// Store event for audit trail
 async fn store_event_audit(
     event: &SlackEventRequest,
-    processed: &ProcessedArtifact,
+    processed: &ProcessedData,
     state: &Arc<AppState>,
 ) {
     let _ = sqlx::query!(

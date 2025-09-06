@@ -5,7 +5,7 @@ members = [
     "crates/interstice-adapters",
     "crates/interstice-api",
     "crates/interstice-workers",
-    "crates/interstice-ml",  # Add this for ML components
+    "crates/interstice-ml",
 ]
 
 [workspace.package]

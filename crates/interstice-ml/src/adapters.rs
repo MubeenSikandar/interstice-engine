@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use chrono::{Datelike, Local, Timelike};
+use interstice_core::types::Priority;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize};
@@ -356,22 +357,22 @@ impl MLPredictorAdapter {
     /// Convert a single artifact with comprehensive mapping
     fn convert_artifact(&self, artifact: &CoreArtifact) -> Result<Artifact> {
         // Validate artifact
-        if artifact.raw_text.is_empty() {
+        if artifact.content.is_empty() {
             bail!("Artifact has empty content");
         }
         
-        if artifact.raw_text.len() > 1_000_000 {
+        if artifact.content.len() > 1_000_000 {
             bail!("Artifact content exceeds maximum size limit");
         }
         
         Ok(Artifact {
             id: artifact.id.to_string(),
             version: 1,
-            content: self.preprocess_content(&artifact.raw_text),
+            content: self.preprocess_content(&artifact.content),
             platform: self.convert_platform(&artifact.platform)?,
             artifact_type: self.convert_artifact_type(&artifact.artifact_type),
             metadata: self.extract_metadata(artifact),
-            created_at: artifact.timestamp,
+            created_at: artifact.created_at,
             embedding: None, // Will be computed by engine
             parent_id: None,
             tags: self.extract_tags(artifact),
@@ -423,6 +424,15 @@ impl MLPredictorAdapter {
             CoreArtifactType::Commit { .. } => ArtifactType::Commit,
             CoreArtifactType::Document { .. } => ArtifactType::Document,
             CoreArtifactType::Message { .. } => ArtifactType::Message,
+            CoreArtifactType::Meeting { .. } => ArtifactType::Meeting,
+            CoreArtifactType::Task { .. } => ArtifactType::Task,
+            CoreArtifactType::Review { .. } => ArtifactType::Review,
+            CoreArtifactType::Deployment { .. } => ArtifactType::Deployment,
+            CoreArtifactType::Metric { .. } => ArtifactType::Report,
+            CoreArtifactType::Alert { .. } => ArtifactType::Alert,
+            CoreArtifactType::Custom { .. } => ArtifactType::Comment,
+            CoreArtifactType::Design { .. } => ArtifactType::Design,
+            CoreArtifactType::TestResult { .. } => ArtifactType::Report,
         }
     }
     
@@ -441,21 +451,21 @@ impl MLPredictorAdapter {
         
         // Extract from artifact type
         match &artifact.artifact_type {
-            CoreArtifactType::PullRequest { repo, .. } => {
-                if let Some(r) = repo {
-                    tags.push(format!("repo:{}", r));
+            CoreArtifactType::PullRequest { title, .. } => {
+                if title.contains("/") {
+                    tags.push(format!("repo:{}", title.split("/").next().unwrap_or("unknown")));
                 }
             }
-            CoreArtifactType::Issue { project, .. } => {
-                if let Some(p) = project {
-                    tags.push(format!("project:{}", p));
+            CoreArtifactType::Issue { id, .. } => {
+                if id.contains("-") {
+                    tags.push(format!("project:{}", id.split("-").next().unwrap_or("unknown")));
                 }
             }
             _ => {}
         }
         
         // Use the static regex
-        for capture in HASHTAG_REGEX.captures_iter(&artifact.raw_text) {
+        for capture in HASHTAG_REGEX.captures_iter(&artifact.content) {
             if let Some(tag) = capture.get(0) {
                 tags.push(tag.as_str().to_string());
             }
@@ -565,12 +575,19 @@ impl MLPredictorAdapter {
 
     fn convert_to_core_artifact(&self, artifact: &Artifact) -> Result<interstice_core::Artifact> {
         Ok(interstice_core::Artifact {
-            id: Uuid::parse_str(&artifact.id)?.to_string(),
-            raw_text: artifact.content.clone(),
-            platform: self.convert_to_core_platform(&artifact.platform),
+            id: Uuid::parse_str(&artifact.id)?,
+            workspace_id: interstice_core::WorkspaceId::new(),
             artifact_type: self.convert_to_core_artifact_type(&artifact.artifact_type),
+            platform: self.convert_to_core_platform(&artifact.platform),
+            content: artifact.content.clone(),
             metadata: artifact.metadata.clone().unwrap_or(serde_json::Value::Null),
-            timestamp: artifact.created_at,
+            created_at: artifact.created_at,
+            updated_at: artifact.created_at,
+            version: 1,
+            state: interstice_core::artifact::ArtifactState::Pending,
+            quality_metrics: interstice_core::artifact::QualityMetrics::default(),
+            related_artifacts: Vec::new(),
+            tags: std::collections::HashSet::new(),
         })
     }
 
@@ -588,65 +605,211 @@ impl MLPredictorAdapter {
             Platform::Zoom => interstice_core::Platform::Zoom,
             Platform::Figma => interstice_core::Platform::Figma,
             Platform::Notion => interstice_core::Platform::Notion,
-            Platform::Linear => interstice_core::Platform::Jira, // Map to closest equivalent
-            Platform::Discord => interstice_core::Platform::Slack, // Map to closest equivalent
-            Platform::Confluence => interstice_core::Platform::Notion, // Map to closest equivalent
-            Platform::GitLab => interstice_core::Platform::GitHub, // Map to closest equivalent
         }
     }
 
     fn convert_to_core_artifact_type(&self, artifact_type: &ArtifactType) -> interstice_core::ArtifactType {
         match artifact_type {
             ArtifactType::PullRequest => interstice_core::ArtifactType::PullRequest { 
-                number: 0, 
-                repo: None 
+                number: 0,
+                title: "Unknown PR".to_string(),
+                state: interstice_core::artifact::PullRequestState::Open,
+                files_changed: 0,
+                additions: 0,
+                deletions: 0,
+                merged: false,
+                draft: false,
+                base_branch: "main".to_string(),
+                head_branch: "feature".to_string(),
+                author: "unknown".to_string(),
+                reviewers: vec![],
+                labels: vec![],
+                merge_conflict: false,
+                ci_status: None,
             },
             ArtifactType::Issue => interstice_core::ArtifactType::Issue { 
-                id: "unknown".to_string(), 
-                project: None 
+                id: "unknown".to_string(),
+                title: "Unknown Issue".to_string(),
+                state: interstice_core::artifact::IssueState::Open,
+                priority: interstice_core::artifact::Priority::Medium,
+                assignees: vec![],
+                labels: vec![],
+                story_points: None,
+                sprint: None,
+                epic: None,
+                blocked: false,
+                blockers: vec![],
+                time_estimate: None,
+                time_spent: None,
             },
             ArtifactType::Commit => interstice_core::ArtifactType::Commit { 
-                sha: "unknown".to_string()
+                sha: "unknown".to_string(),
+                message: "Unknown commit".to_string(),
+                author: "unknown".to_string(),
+                committer: "unknown".to_string(),
+                files_changed: 0,
+                additions: 0,
+                deletions: 0,
+                branch: "main".to_string(),
+                is_merge: false,
+                signed: false,
+                verified: false,
             },
             ArtifactType::Document => interstice_core::ArtifactType::Document { 
-                title: "unknown".to_string(), 
-                url: None 
+                id: "unknown".to_string(),
+                title: "Unknown Document".to_string(),
+                doc_type: interstice_core::artifact::DocumentType::Other("Unknown".to_string()),
+                url: None,
+                author: "unknown".to_string(),
+                collaborators: vec![],
+                word_count: None,
+                last_modified: chrono::Utc::now(),
+                version: 1,
+                is_template: false,
+                access_level: interstice_core::artifact::AccessLevel::Internal,
             },
             ArtifactType::Message => interstice_core::ArtifactType::Message { 
-                content: "unknown".to_string()
+                id: "unknown".to_string(),
+                channel: "general".to_string(),
+                thread_id: None,
+                author: "unknown".to_string(),
+                content: "Unknown message".to_string(),
+                mentions: vec![],
+                attachments: vec![],
+                reactions: std::collections::HashMap::new(),
+                sentiment: interstice_core::artifact::Sentiment::Neutral,
+                intent: interstice_core::artifact::MessageIntent::Other,
+                is_edited: false,
+                reply_count: 0,
             },
             // Map additional ML types to closest core equivalents
             ArtifactType::Comment => interstice_core::ArtifactType::Message { 
-                content: "comment".to_string()
+                id: "unknown".to_string(),
+                channel: "general".to_string(),
+                thread_id: None,
+                author: "unknown".to_string(),
+                content: "comment".to_string(),
+                mentions: vec![],
+                attachments: vec![],
+                reactions: std::collections::HashMap::new(),
+                sentiment: interstice_core::artifact::Sentiment::Neutral,
+                intent: interstice_core::artifact::MessageIntent::Other,
+                is_edited: false,
+                reply_count: 0,
             },
             ArtifactType::Review => interstice_core::ArtifactType::PullRequest { 
-                number: 0, 
-                repo: None 
+                number: 0,
+                title: "Review".to_string(),
+                state: interstice_core::artifact::PullRequestState::Open,
+                files_changed: 0,
+                additions: 0,
+                deletions: 0,
+                merged: false,
+                draft: false,
+                base_branch: "main".to_string(),
+                head_branch: "feature".to_string(),
+                author: "unknown".to_string(),
+                reviewers: vec![],
+                labels: vec![],
+                merge_conflict: false,
+                ci_status: None,
             },
             ArtifactType::Meeting => interstice_core::ArtifactType::Message { 
-                content: "meeting".to_string()
+                id: "unknown".to_string(),
+                channel: "general".to_string(),
+                thread_id: None,
+                author: "unknown".to_string(),
+                content: "meeting".to_string(),
+                mentions: vec![],
+                attachments: vec![],
+                reactions: std::collections::HashMap::new(),
+                sentiment: interstice_core::artifact::Sentiment::Neutral,
+                intent: interstice_core::artifact::MessageIntent::Other,
+                is_edited: false,
+                reply_count: 0,
             },
             ArtifactType::Task => interstice_core::ArtifactType::Issue { 
-                id: "task".to_string(), 
-                project: None 
+                id: "task".to_string(),
+                title: "Task".to_string(),
+                state: interstice_core::artifact::IssueState::Open,
+                priority: interstice_core::artifact::Priority::Medium,
+                assignees: vec![],
+                labels: vec![],
+                story_points: None,
+                sprint: None,
+                epic: None,
+                blocked: false,
+                blockers: vec![],
+                time_estimate: None,
+                time_spent: None,
             },
             ArtifactType::Epic => interstice_core::ArtifactType::Issue { 
-                id: "epic".to_string(), 
-                project: None 
+                id: "epic".to_string(),
+                title: "Epic".to_string(),
+                state: interstice_core::artifact::IssueState::Open,
+                priority: interstice_core::artifact::Priority::Medium,
+                assignees: vec![],
+                labels: vec![],
+                story_points: None,
+                sprint: None,
+                epic: None,
+                blocked: false,
+                blockers: vec![],
+                time_estimate: None,
+                time_spent: None,
             },
             ArtifactType::Design => interstice_core::ArtifactType::Document { 
-                title: "design".to_string(), 
-                url: None 
+                id: "unknown".to_string(),
+                title: "design".to_string(),
+                doc_type: interstice_core::artifact::DocumentType::Design,
+                url: None,
+                author: "unknown".to_string(),
+                collaborators: vec![],
+                word_count: None,
+                last_modified: chrono::Utc::now(),
+                version: 1,
+                is_template: false,
+                access_level: interstice_core::artifact::AccessLevel::Internal,
             },
             ArtifactType::Deployment => interstice_core::ArtifactType::Commit { 
-                sha: "deployment".to_string()
+                sha: "deployment".to_string(),
+                message: "Deployment".to_string(),
+                author: "unknown".to_string(),
+                committer: "unknown".to_string(),
+                files_changed: 0,
+                additions: 0,
+                deletions: 0,
+                branch: "main".to_string(),
+                is_merge: false,
+                signed: false,
+                verified: false,
             },
             ArtifactType::Alert => interstice_core::ArtifactType::Message { 
-                content: "alert".to_string()
+                id: "unknown".to_string(),
+                channel: "alerts".to_string(),
+                thread_id: None,
+                author: "system".to_string(),
+                content: "alert".to_string(),
+                mentions: vec![],
+                attachments: vec![],
+                reactions: std::collections::HashMap::new(),
+                sentiment: interstice_core::artifact::Sentiment::Neutral,
+                intent: interstice_core::artifact::MessageIntent::Other,
+                is_edited: false,
+                reply_count: 0,
             },
             ArtifactType::Report => interstice_core::ArtifactType::Document { 
-                title: "report".to_string(), 
-                url: None 
+                id: "unknown".to_string(),
+                title: "report".to_string(),
+                doc_type: interstice_core::artifact::DocumentType::Other("Report".to_string()),
+                url: None,
+                author: "unknown".to_string(),
+                collaborators: vec![],
+                word_count: None,
+                last_modified: chrono::Utc::now(),
+                version: 1,
+                is_template: false,
+                access_level: interstice_core::artifact::AccessLevel::Internal,
             },
         }
     }
@@ -742,13 +905,16 @@ impl MLPredictor for MLPredictorAdapter {
         let core_predictions: Vec<CorePrediction> = predictions
             .into_iter()
             .filter_map(|p| {
-                match Uuid::parse_str(&p.outcome_id) {
-                    Ok(id) => Some(CorePrediction {
-                        outcome_id: id,
-                        outcome_name: p.outcome_name,
-                        confidence: p.confidence,
-                        reasoning: p.reasoning,
-                    }),
+                                    match Uuid::parse_str(&p.outcome_id) {
+                        Ok(id) => Some(CorePrediction {
+                            outcome_id: id,
+                            outcome_name: p.outcome_name,
+                            confidence: p.confidence,
+                            reasoning: p.reasoning,
+                            suggested_targets: vec![],
+                            estimated_impact: 0.5,
+                            recommended_priority: Priority::Medium,
+                        }),
                     Err(e) => {
                         warn!("Invalid outcome ID {}: {}", p.outcome_id, e);
                         None
@@ -871,7 +1037,7 @@ impl PredictionCache {
         
         for artifact in artifacts {
             artifact.id.hash(&mut hasher);
-            artifact.raw_text.hash(&mut hasher);
+            artifact.content.hash(&mut hasher);
         }
         
         format!("{:x}", hasher.finish())

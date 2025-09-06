@@ -143,9 +143,15 @@ impl ArtifactBuilder {
         let artifact = Artifact {
             id: self.id.ok_or(ValidationError::MissingField("id"))?,
             version: self.version.unwrap_or(1),
-            content: self.content.ok_or(ValidationError::MissingField("content"))?,
-            platform: self.platform.ok_or(ValidationError::MissingField("platform"))?,
-            artifact_type: self.artifact_type.ok_or(ValidationError::MissingField("artifact_type"))?,
+            content: self
+                .content
+                .ok_or(ValidationError::MissingField("content"))?,
+            platform: self
+                .platform
+                .ok_or(ValidationError::MissingField("platform"))?,
+            artifact_type: self
+                .artifact_type
+                .ok_or(ValidationError::MissingField("artifact_type"))?,
             metadata: self.metadata,
             created_at: Utc::now(),
             embedding: self.embedding,
@@ -173,10 +179,6 @@ pub enum Platform {
     Zoom = 9,
     Figma = 10,
     Notion = 11,
-    Linear = 12,
-    Discord = 13,
-    Confluence = 14,
-    GitLab = 15,
 }
 
 impl Platform {
@@ -184,9 +186,18 @@ impl Platform {
     pub fn all() -> &'static [Platform] {
         use Platform::*;
         &[
-            Slack, GitHub, Jira, Teams, Asana, VSCode, GoogleWorkspace,
-            Monday, Trello, Zoom, Figma, Notion, Linear, Discord,
-            Confluence, GitLab,
+            Slack,
+            GitHub,
+            Jira,
+            Teams,
+            Asana,
+            VSCode,
+            GoogleWorkspace,
+            Monday,
+            Trello,
+            Zoom,
+            Figma,
+            Notion,
         ]
     }
 
@@ -205,19 +216,12 @@ impl Platform {
             Platform::Zoom => "Zoom",
             Platform::Figma => "Figma",
             Platform::Notion => "Notion",
-            Platform::Linear => "Linear",
-            Platform::Discord => "Discord",
-            Platform::Confluence => "Confluence",
-            Platform::GitLab => "GitLab",
         }
     }
 
     /// Check if platform supports real-time events
     pub fn supports_realtime(&self) -> bool {
-        matches!(self, 
-            Platform::Slack | Platform::Discord | Platform::Teams | 
-            Platform::GitHub | Platform::GitLab
-        )
+        matches!(self, Platform::Slack | Platform::Teams | Platform::GitHub)
     }
 }
 
@@ -244,10 +248,6 @@ impl FromStr for Platform {
             "zoom" => Ok(Platform::Zoom),
             "figma" => Ok(Platform::Figma),
             "notion" => Ok(Platform::Notion),
-            "linear" => Ok(Platform::Linear),
-            "discord" => Ok(Platform::Discord),
-            "confluence" => Ok(Platform::Confluence),
-            "gitlab" => Ok(Platform::GitLab),
             _ => Err(ParseError::UnknownPlatform(s.to_string())),
         }
     }
@@ -278,8 +278,20 @@ impl ArtifactType {
     pub fn all() -> &'static [ArtifactType] {
         use ArtifactType::*;
         &[
-            PullRequest, Issue, Commit, Document, Message, Comment,
-            Review, Meeting, Task, Epic, Design, Deployment, Alert, Report,
+            PullRequest,
+            Issue,
+            Commit,
+            Document,
+            Message,
+            Comment,
+            Review,
+            Meeting,
+            Task,
+            Epic,
+            Design,
+            Deployment,
+            Alert,
+            Report,
         ]
     }
 
@@ -305,9 +317,12 @@ impl ArtifactType {
 
     /// Check if artifact type represents completed work
     pub fn is_completion_indicator(&self) -> bool {
-        matches!(self,
-            ArtifactType::PullRequest | ArtifactType::Deployment |
-            ArtifactType::Commit | ArtifactType::Review
+        matches!(
+            self,
+            ArtifactType::PullRequest
+                | ArtifactType::Deployment
+                | ArtifactType::Commit
+                | ArtifactType::Review
         )
     }
 }
@@ -410,7 +425,11 @@ pub struct OutcomePrediction {
 
 impl OutcomePrediction {
     /// Create a simple prediction
-    pub fn simple(outcome_id: impl Into<String>, outcome_name: impl Into<String>, confidence: f32) -> Self {
+    pub fn simple(
+        outcome_id: impl Into<String>,
+        outcome_name: impl Into<String>,
+        confidence: f32,
+    ) -> Self {
         Self {
             outcome_id: outcome_id.into(),
             outcome_name: outcome_name.into(),
@@ -470,36 +489,34 @@ impl PerOutcomeMetrics {
         let tp = self.true_positives as f32;
         let fp = self.false_positives as f32;
         let fn_val = self.false_negatives as f32;
-        
+
         // Precision = TP / (TP + FP)
-        self.precision = if tp + fp > 0.0 {
-            tp / (tp + fp)
-        } else {
-            0.0
-        };
-        
+        self.precision = if tp + fp > 0.0 { tp / (tp + fp) } else { 0.0 };
+
         // Recall = TP / (TP + FN)
         self.recall = if tp + fn_val > 0.0 {
             tp / (tp + fn_val)
         } else {
             0.0
         };
-        
+
         // F1 = 2 * (precision * recall) / (precision + recall)
         self.f1_score = if self.precision + self.recall > 0.0 {
             2.0 * (self.precision * self.recall) / (self.precision + self.recall)
         } else {
             0.0
         };
-        
+
         // Support = TP + FN (total actual positives)
         self.support = self.true_positives + self.false_negatives;
     }
 
     /// Get accuracy for this outcome
     pub fn accuracy(&self) -> f32 {
-        let total = (self.true_positives + self.false_positives + 
-                     self.false_negatives + self.true_negatives) as f32;
+        let total = (self.true_positives
+            + self.false_positives
+            + self.false_negatives
+            + self.true_negatives) as f32;
         if total > 0.0 {
             (self.true_positives + self.true_negatives) as f32 / total
         } else {
@@ -543,47 +560,45 @@ impl ConfusionMatrix {
         if self.total == 0 {
             return 0.0;
         }
-        
-        let correct: usize = (0..self.matrix.len())
-            .map(|i| self.matrix[i][i])
-            .sum();
-        
+
+        let correct: usize = (0..self.matrix.len()).map(|i| self.matrix[i][i]).sum();
+
         correct as f32 / self.total as f32
     }
 
     /// Get per-class metrics
     pub fn per_class_metrics(&self) -> HashMap<String, PerOutcomeMetrics> {
         let mut metrics = HashMap::new();
-        
+
         for (i, label) in self.labels.iter().enumerate() {
             let mut metric = PerOutcomeMetrics::new(label.clone());
-            
+
             // True positives: diagonal element
             metric.true_positives = self.matrix[i][i];
-            
+
             // False positives: sum of column i excluding diagonal
             metric.false_positives = (0..self.matrix.len())
                 .filter(|&j| j != i)
                 .map(|j| self.matrix[j][i])
                 .sum();
-            
+
             // False negatives: sum of row i excluding diagonal
             metric.false_negatives = (0..self.matrix.len())
                 .filter(|&j| j != i)
                 .map(|j| self.matrix[i][j])
                 .sum();
-            
+
             // True negatives: all correct predictions except for this class
             metric.true_negatives = (0..self.matrix.len())
                 .flat_map(|j| (0..self.matrix.len()).map(move |k| (j, k)))
                 .filter(|&(j, k)| j != i && k != i)
                 .map(|(j, k)| self.matrix[j][k])
                 .sum();
-            
+
             metric.calculate();
             metrics.insert(label.clone(), metric);
         }
-        
+
         metrics
     }
 
@@ -591,15 +606,15 @@ impl ConfusionMatrix {
     pub fn macro_metrics(&self) -> (f32, f32, f32) {
         let per_class = self.per_class_metrics();
         let n = per_class.len() as f32;
-        
+
         if n == 0.0 {
             return (0.0, 0.0, 0.0);
         }
-        
+
         let precision = per_class.values().map(|m| m.precision).sum::<f32>() / n;
         let recall = per_class.values().map(|m| m.recall).sum::<f32>() / n;
         let f1 = per_class.values().map(|m| m.f1_score).sum::<f32>() / n;
-        
+
         (precision, recall, f1)
     }
 
@@ -607,65 +622,79 @@ impl ConfusionMatrix {
     pub fn weighted_metrics(&self) -> (f32, f32, f32) {
         let per_class = self.per_class_metrics();
         let total_support: usize = per_class.values().map(|m| m.support).sum();
-        
+
         if total_support == 0 {
             return (0.0, 0.0, 0.0);
         }
-        
+
         let total_f = total_support as f32;
-        
-        let precision = per_class.values()
+
+        let precision = per_class
+            .values()
             .map(|m| m.precision * m.support as f32)
-            .sum::<f32>() / total_f;
-        
-        let recall = per_class.values()
+            .sum::<f32>()
+            / total_f;
+
+        let recall = per_class
+            .values()
             .map(|m| m.recall * m.support as f32)
-            .sum::<f32>() / total_f;
-        
-        let f1 = per_class.values()
+            .sum::<f32>()
+            / total_f;
+
+        let f1 = per_class
+            .values()
             .map(|m| m.f1_score * m.support as f32)
-            .sum::<f32>() / total_f;
-        
+            .sum::<f32>()
+            / total_f;
+
         (precision, recall, f1)
     }
 
     /// Generate classification report
     pub fn classification_report(&self) -> String {
         let mut report = String::new();
-        report.push_str(&format!("{:<20} {:>10} {:>10} {:>10} {:>10}\n", 
-            "Class", "Precision", "Recall", "F1-Score", "Support"));
+        report.push_str(&format!(
+            "{:<20} {:>10} {:>10} {:>10} {:>10}\n",
+            "Class", "Precision", "Recall", "F1-Score", "Support"
+        ));
         report.push_str(&"-".repeat(70));
         report.push('\n');
-        
+
         let metrics = self.per_class_metrics();
         for label in &self.labels {
             if let Some(m) = metrics.get(label) {
-                report.push_str(&format!("{:<20} {:>10.3} {:>10.3} {:>10.3} {:>10}\n",
-                    label, m.precision, m.recall, m.f1_score, m.support));
+                report.push_str(&format!(
+                    "{:<20} {:>10.3} {:>10.3} {:>10.3} {:>10}\n",
+                    label, m.precision, m.recall, m.f1_score, m.support
+                ));
             }
         }
-        
+
         report.push_str(&"-".repeat(70));
         report.push('\n');
-        
+
         let (macro_p, macro_r, macro_f1) = self.macro_metrics();
-        report.push_str(&format!("{:<20} {:>10.3} {:>10.3} {:>10.3}\n",
-            "Macro avg", macro_p, macro_r, macro_f1));
-        
+        report.push_str(&format!(
+            "{:<20} {:>10.3} {:>10.3} {:>10.3}\n",
+            "Macro avg", macro_p, macro_r, macro_f1
+        ));
+
         let (weighted_p, weighted_r, weighted_f1) = self.weighted_metrics();
-        report.push_str(&format!("{:<20} {:>10.3} {:>10.3} {:>10.3}\n",
-            "Weighted avg", weighted_p, weighted_r, weighted_f1));
-        
+        report.push_str(&format!(
+            "{:<20} {:>10.3} {:>10.3} {:>10.3}\n",
+            "Weighted avg", weighted_p, weighted_r, weighted_f1
+        ));
+
         report.push_str(&format!("\nAccuracy: {:.3}\n", self.accuracy()));
         report.push_str(&format!("Total predictions: {}\n", self.total));
-        
+
         report
     }
 
     /// Export as CSV
     pub fn to_csv(&self) -> String {
         let mut csv = String::new();
-        
+
         // Header
         csv.push_str("Actual\\Predicted");
         for label in &self.labels {
@@ -673,7 +702,7 @@ impl ConfusionMatrix {
             csv.push_str(label);
         }
         csv.push('\n');
-        
+
         // Matrix rows
         for (i, row) in self.matrix.iter().enumerate() {
             csv.push_str(&self.labels[i]);
@@ -683,12 +712,10 @@ impl ConfusionMatrix {
             }
             csv.push('\n');
         }
-        
+
         csv
     }
 }
-
-
 
 /// Contributing factor for predictions
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -734,12 +761,12 @@ impl Duration {
             likely_hours: likely,
         }
     }
-    
+
     /// Get as standard Duration
     pub fn as_std_duration(&self) -> std::time::Duration {
         std::time::Duration::from_secs((self.likely_hours * 3600.0) as u64)
     }
-    
+
     /// Format as human-readable string
     pub fn to_human_string(&self) -> String {
         if self.likely_hours < 1.0 {
@@ -771,7 +798,6 @@ pub struct ModelMetrics {
 }
 
 impl ModelMetrics {
-
     pub fn default() -> Self {
         Self {
             correct_predictions: 0,
@@ -792,7 +818,7 @@ impl ModelMetrics {
     pub fn from_confusion_matrix(matrix: &ConfusionMatrix) -> Self {
         let (precision, recall, f1) = matrix.weighted_metrics();
         let per_outcome = matrix.per_class_metrics();
-        
+
         Self {
             correct_predictions: (0..matrix.matrix.len())
                 .map(|i| matrix.matrix[i][i])
@@ -815,17 +841,18 @@ impl ModelMetrics {
         if was_correct {
             self.correct_predictions += 1;
         }
-        
+
         // Update accuracy
         self.accuracy = self.correct_predictions as f64 / self.total_predictions as f64;
-        
+
         // Update mean confidence (exponential moving average)
         let alpha = 0.1;
         self.mean_confidence = alpha * confidence as f64 + (1.0 - alpha) * self.mean_confidence;
-        
+
         // Update latency (exponential moving average)
-        self.prediction_latency_ms = alpha * latency_ms + (1.0 - alpha) * self.prediction_latency_ms;
-        
+        self.prediction_latency_ms =
+            alpha * latency_ms + (1.0 - alpha) * self.prediction_latency_ms;
+
         self.last_updated = Utc::now();
     }
 
@@ -888,7 +915,10 @@ impl ActionType {
 
     /// Check if action represents positive feedback
     pub fn is_positive(&self) -> bool {
-        matches!(self, ActionType::Accept | ActionType::Correct | ActionType::Modify)
+        matches!(
+            self,
+            ActionType::Accept | ActionType::Correct | ActionType::Modify
+        )
     }
 }
 
@@ -931,9 +961,15 @@ impl UserAction {
     /// Calculate action quality score
     pub fn quality_score(&self) -> f32 {
         let mut score = 0.5;
-        if self.confidence.is_some() { score += 0.2; }
-        if self.feedback_text.is_some() { score += 0.2; }
-        if self.user_id.is_some() { score += 0.1; }
+        if self.confidence.is_some() {
+            score += 0.2;
+        }
+        if self.feedback_text.is_some() {
+            score += 0.2;
+        }
+        if self.user_id.is_some() {
+            score += 0.1;
+        }
         score
     }
 }
@@ -1010,27 +1046,32 @@ impl TrainingExample {
             created_at: Utc::now(),
             is_validated: false,
             validation_method: None,
-        }    
+        }
     }
 
     pub fn importance(&self) -> f32 {
         let base = self.training_weight();
-        
+
         // Boost importance if user provided explicit feedback
-        let feedback_boost = if self.user_feedback.is_some() { 0.2 } else { 0.0 };
-        
+        let feedback_boost = if self.user_feedback.is_some() {
+            0.2
+        } else {
+            0.0
+        };
+
         // Boost if feedback score indicates strong signal
-        let score_boost = self.feedback_score
+        let score_boost = self
+            .feedback_score
             .map(|s| (s - 0.5).abs() * 0.2)
             .unwrap_or(0.0);
-        
+
         (base + feedback_boost + score_boost).min(1.0)
     }
 
     /// Check if example is ready for training
     pub fn is_complete(&self) -> bool {
-        self.actual_outcome_id.is_some() && 
-        (self.user_feedback.is_some() || self.feedback_score.is_some())
+        self.actual_outcome_id.is_some()
+            && (self.user_feedback.is_some() || self.feedback_score.is_some())
     }
 
     /// Get training weight based on validation
@@ -1085,7 +1126,9 @@ impl fmt::Display for ValidationError {
             ValidationError::EmptyId => write!(f, "Artifact ID cannot be empty"),
             ValidationError::EmptyContent => write!(f, "Artifact content cannot be empty"),
             ValidationError::InvalidVersion => write!(f, "Artifact version must be greater than 0"),
-            ValidationError::MissingField(field) => write!(f, "Required field '{}' is missing", field),
+            ValidationError::MissingField(field) => {
+                write!(f, "Required field '{}' is missing", field)
+            }
         }
     }
 }
@@ -1123,7 +1166,7 @@ mod tests {
             .artifact_type(ArtifactType::PullRequest)
             .build()
             .unwrap();
-        
+
         assert_eq!(artifact.id, "test-123");
         assert_eq!(artifact.version, 1);
         assert!(artifact.validate().is_ok());
@@ -1132,7 +1175,10 @@ mod tests {
     #[test]
     fn test_platform_parsing() {
         assert_eq!("github".parse::<Platform>().unwrap(), Platform::GitHub);
-        assert_eq!("Microsoft Teams".parse::<Platform>().unwrap(), Platform::Teams);
+        assert_eq!(
+            "Microsoft Teams".parse::<Platform>().unwrap(),
+            Platform::Teams
+        );
         assert!("unknown".parse::<Platform>().is_err());
     }
 
@@ -1144,7 +1190,7 @@ mod tests {
             weight: 0.5,
             description: "Historical pattern match".to_string(),
         });
-        
+
         assert!(prediction.is_confident(0.8));
         assert!(prediction.quality_score() > 0.85);
     }
@@ -1154,7 +1200,7 @@ mod tests {
         let mut metrics = ModelMetrics::default();
         metrics.update(true, 0.9, 50.0);
         metrics.update(false, 0.7, 45.0);
-        
+
         assert_eq!(metrics.total_predictions, 2);
         assert_eq!(metrics.correct_predictions, 1);
         assert_eq!(metrics.accuracy, 0.5);
@@ -1164,7 +1210,7 @@ mod tests {
     fn test_training_example_completeness() {
         let mut example = TrainingExample::new("Test input");
         assert!(!example.is_complete());
-        
+
         example.actual_outcome_id = Some(Uuid::new_v4());
         example.user_feedback = Some("accepted".to_string());
         assert!(example.is_complete());

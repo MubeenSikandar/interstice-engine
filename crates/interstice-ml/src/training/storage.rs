@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, QueryBuilder, Postgres};
 use uuid::Uuid;
 
-use interstice_core::storage::{DatabaseStorage, Storage as CoreStorage};
+use interstice_core::{outcome::OutcomeId, storage::{PostgresStorage, StorageBackend as CoreStorage}, WorkspaceId};
 
 pub use crate::training::model_storage::{
     ModelStorage, S3ModelStorage, LocalModelStorage, HybridModelStorage,
@@ -23,7 +23,7 @@ pub use crate::training::model_storage::{
 /// Extended storage that combines core storage with ML-specific storage
 pub struct MLStorage {
     /// Core storage for artifacts/outcomes
-    core: Arc<DatabaseStorage>,
+    core: Arc<PostgresStorage>,
     
     /// Model binary storage
     models: Arc<dyn ModelStorage>,
@@ -34,7 +34,7 @@ pub struct MLStorage {
 
 impl MLStorage {
     pub fn new(
-        core: Arc<DatabaseStorage>,
+        core: Arc<PostgresStorage>,
         models: Arc<dyn ModelStorage>,
         pool: PgPool,
     ) -> Self {
@@ -42,7 +42,7 @@ impl MLStorage {
     }
     
     /// Get reference to core storage
-    pub fn core(&self) -> &Arc<DatabaseStorage> {
+    pub fn core(&self) -> &Arc<PostgresStorage> {
         &self.core
     }
     
@@ -549,20 +549,21 @@ impl TrainingDataBridge {
         artifact_id: Uuid,
     ) -> Result<Uuid> {
         // Fetch artifact from core storage
+        let workspace_id = WorkspaceId::from_uuid(workspace_id);
         let artifacts = self.storage.core()
-            .get_artifacts(workspace_id, Some(1))
+            .query_artifacts(workspace_id, None)
             .await?;
         
         let artifact = artifacts.into_iter()
-            .find(|a| a.id == artifact_id.to_string())
+            .find(|a| a.id == artifact_id)
             .context("Artifact not found")?;
         
         // Create training example
         let example = TrainingExample {
             id: Uuid::new_v4(),
-            workspace_id,
+            workspace_id: workspace_id.as_uuid().clone(),
             artifact_id: Some(artifact_id),
-            input_text: artifact.raw_text.clone(),
+            input_text: artifact.content.clone(),
             suggested_outcome_id: None,
             actual_outcome_id: None,
             user_feedback: None,
@@ -571,7 +572,7 @@ impl TrainingDataBridge {
                 "platform": artifact.platform.to_string(),
                 "artifact_type": format!("{:?}", artifact.artifact_type),
                 "metadata": artifact.metadata,
-                "original_timestamp": artifact.timestamp,
+                "original_timestamp": artifact.created_at,
             })),
             created_at: Utc::now(),
             is_validated: false,
@@ -580,7 +581,7 @@ impl TrainingDataBridge {
         };
         
         self.storage.store_training_example(
-            workspace_id,
+            workspace_id.as_uuid().clone(),
             Some(artifact_id),
             &example,
         ).await
@@ -609,7 +610,7 @@ impl TrainingDataBridge {
         // If there's an associated artifact, link it to the outcome in core storage
         if let Some(artifact_id) = example.artifact_id {
             self.storage.core()
-                .link_artifact_outcome(artifact_id, outcome_id, confidence)
+                .link_artifact_outcome(artifact_id, OutcomeId::from_uuid(outcome_id), confidence as f64, None)
                 .await?;
         }
         
@@ -716,7 +717,11 @@ impl StorageFactory {
             .context("Failed to run migrations")?;
         
         // Create core storage
-        let core_storage = Arc::new(DatabaseStorage::new(pool.clone()));
+        let config = interstice_core::storage::StorageConfig {
+            database_url: database_url.to_string(),
+            ..Default::default()
+        };
+        let core_storage = Arc::new(PostgresStorage::new(config).await?);
         
         // Create model storage based on config
         let model_storage: Arc<dyn ModelStorage> = match model_storage_config {

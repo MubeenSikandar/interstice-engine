@@ -23,6 +23,8 @@ sqlx = { workspace = true }
 # Additional dependencies
 uuid = { workspace = true }
 chrono = { workspace = true }
+dashmap = "6.1.0"
+futures = "0.3.31"
 
 [features]
 default = ["full-slack"]

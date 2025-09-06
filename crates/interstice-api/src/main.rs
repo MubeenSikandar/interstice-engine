@@ -3,11 +3,10 @@ use axum::{
     middleware,
     Router,
 };
-use interstice_adapters::{AdapterManager, SlackAdapter, PlatformAdapter};
-use interstice_core::{IntersticeEngine, MLPredictor, DatabaseStorage, Storage};
+use interstice_adapters::{slack::SlackConfig, AdapterManager, PlatformAdapter, SlackAdapter};
+use interstice_core::{storage::PostgresStorage, IntersticeEngine, MLPredictor, StorageBackend, WorkspaceId};
 use interstice_ml::{MLPipeline, adapters::MLPredictorAdapter};
 use sqlx::PgPool;
-use uuid::Uuid;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -30,7 +29,7 @@ pub struct AppState {
     /// Manages all platform adapters dynamically
     pub adapters: Arc<AdapterManager>,
     /// Slack adapter for direct access (most commonly used)
-    pub slack_adapter: Option<SlackAdapter>,
+    pub slack_adapter: Option<Arc<SlackAdapter>>,
     /// Core engine with ML predictor integrated
     pub core: Arc<IntersticeEngine>,
     /// ML pipeline for predictions and training
@@ -240,8 +239,9 @@ async fn initialize_core_engine(
     db: PgPool,
 ) -> Arc<IntersticeEngine> {
     // Create storage backend
-    let storage = Arc::new(DatabaseStorage::new(db.clone())) as Arc<dyn Storage>;
-    
+    let storage_config = interstice_core::storage::StorageConfig::default();
+    let storage = Arc::new(PostgresStorage::new(storage_config).await.unwrap()) as Arc<dyn StorageBackend>;
+
     // Create engine with ML predictor and storage
     let engine = IntersticeEngine::new()
         .with_ml_predictor(ml_predictor)
@@ -257,7 +257,7 @@ async fn initialize_adapters(
     db: &PgPool,
     ml_pipeline: &Arc<MLPipeline>,
     _core: &Arc<IntersticeEngine>,
-) -> (AdapterManager, Option<SlackAdapter>) {
+    ) -> (AdapterManager, Option<Arc<SlackAdapter>>) {
     let mut adapters = AdapterManager::new();
     let mut slack_adapter = None;
     
@@ -269,19 +269,50 @@ async fn initialize_adapters(
         // Get workspace ID from environment or use default
         let workspace_id = std::env::var("SLACK_WORKSPACE_ID")
             .ok()
-            .and_then(|id| Uuid::parse_str(&id).ok())
+            .and_then(|id| id.parse().ok())
             .unwrap_or_else(|| {
                 warn!("SLACK_WORKSPACE_ID not set or invalid, using default");
-                Uuid::parse_str("92e07a23-a257-4353-a170-534a2019771a").unwrap()
+                "92e07a23-a257-4353-a170-534a2019771a".parse().unwrap()
             });
         
-        let adapter = SlackAdapter::new(slack_token, signing_secret)
-            .with_storage(db.clone())
-            .with_ml_pipeline(ml_pipeline.clone())
-            .with_workspace_id(workspace_id);
+        let config = SlackConfig {
+            bot_token: slack_token.clone(),
+            signing_secret: signing_secret.clone(),
+            app_token: None,
+            client_id: None,
+            client_secret: None,
+            workspace_id,
+            enable_socket_mode: false,
+            enable_events_api: true,
+            retry_config: Default::default(),
+            cache_config: Default::default(),
+            feature_flags: Default::default(),
+        };
         
-        slack_adapter = Some(adapter.clone());
-        adapters.register(Box::new(adapter) as Box<dyn PlatformAdapter>);
+        let adapter = SlackAdapter::new(config).await
+            .expect("Failed to create Slack adapter")
+            .with_ml_pipeline(ml_pipeline.clone());
+        
+        // Create a second instance for the adapter manager
+        let config2 = SlackConfig {
+            bot_token: slack_token,
+            signing_secret,
+            app_token: None,
+            client_id: None,
+            client_secret: None,
+            workspace_id,
+            enable_socket_mode: false,
+            enable_events_api: true,
+            retry_config: Default::default(),
+            cache_config: Default::default(),
+            feature_flags: Default::default(),
+        };
+        let adapter2 = SlackAdapter::new(config2).await
+            .expect("Failed to create Slack adapter")
+            .with_ml_pipeline(ml_pipeline.clone());
+        
+        slack_adapter = Some(Arc::new(adapter));
+        adapters.register(Box::new(adapter2) as Box<dyn PlatformAdapter>);
         info!("Slack adapter initialized with workspace {}", workspace_id);
     } else {
         warn!("Slack adapter not configured - missing SLACK_BOT_TOKEN or SLACK_SIGNING_SECRET");

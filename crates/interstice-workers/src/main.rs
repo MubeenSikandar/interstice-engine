@@ -1,11 +1,10 @@
-use interstice_core::{IntersticeEngine, Platform, ProcessedArtifact};
+use interstice_core::{IntersticeEngine, Platform, ProcessedData};
 use interstice_ml::MLPipeline;
 use slack_morphism::prelude::*;
 use sqlx::PgPool;
 use std::sync::Arc;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration};
 use tracing::{error, info, warn};
-use uuid::Uuid;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,9 +15,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
 
     // Initialize database connection
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set");
-    
+    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+
     let pool = PgPool::connect(&database_url).await?;
     info!("Connected to database");
 
@@ -35,8 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("SLACK_BOT_TOKEN"),
         std::env::var("SLACK_SIGNING_SECRET"),
     ) {
-        let connector = SlackClientHyperConnector::new()
-            .expect("Failed to create Slack connector");
+        let connector = SlackClientHyperConnector::new().expect("Failed to create Slack connector");
         let client = SlackClient::new(connector);
         let token = SlackApiToken::new(SlackApiTokenValue::from(bot_token));
         Some((client, token))
@@ -174,11 +171,11 @@ async fn performance_monitoring_worker(pool: PgPool) {
 
 async fn should_send_weekly_digest() -> bool {
     use chrono::{Datelike, Timelike, Utc};
-    
+
     let now = Utc::now();
     let weekday = now.weekday();
     let hour = now.hour();
-    
+
     // Send every Monday at 9 AM
     weekday == chrono::Weekday::Mon && hour == 9
 }
@@ -188,7 +185,7 @@ async fn should_retrain_model() -> bool {
     // 1. Number of new training examples since last training
     // 2. Model performance degradation
     // 3. Time since last training
-    
+
     // For now, just return true every 24 hours
     true
 }
@@ -203,23 +200,20 @@ async fn generate_weekly_digest(pool: &PgPool) -> Result<WeeklyDigest, sqlx::Err
     .count
     .unwrap_or(0);
 
-    let outcomes_count = sqlx::query!(
-        "SELECT COUNT(*) as count FROM outcomes"
-    )
-    .fetch_one(pool)
-    .await?
-    .count
-    .unwrap_or(0);
-
-    let mapped_work_percentage = if artifacts_count > 0 {
-        let mapped_count = sqlx::query!(
-            "SELECT COUNT(DISTINCT artifact_id) as count FROM artifact_outcomes"
-        )
+    let outcomes_count = sqlx::query!("SELECT COUNT(*) as count FROM outcomes")
         .fetch_one(pool)
         .await?
         .count
         .unwrap_or(0);
-        
+
+    let mapped_work_percentage = if artifacts_count > 0 {
+        let mapped_count =
+            sqlx::query!("SELECT COUNT(DISTINCT artifact_id) as count FROM artifact_outcomes")
+                .fetch_one(pool)
+                .await?
+                .count
+                .unwrap_or(0);
+
         (mapped_count as f64 / artifacts_count as f64) * 100.0
     } else {
         0.0
@@ -248,13 +242,11 @@ async fn send_digest_to_slack(
     pool: &PgPool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let session = client.open_session(token);
-    
+
     // Get all Slack workspaces
-    let workspaces = sqlx::query!(
-        "SELECT team_id, bot_access_token FROM slack_workspaces"
-    )
-    .fetch_all(pool)
-    .await?;
+    let workspaces = sqlx::query!("SELECT team_id, bot_access_token FROM slack_workspaces")
+        .fetch_all(pool)
+        .await?;
 
     for workspace in workspaces {
         // Send digest to each workspace's general channel or specified channel
@@ -268,15 +260,25 @@ async fn send_digest_to_slack(
             digest.artifacts_count,
             digest.outcomes_count,
             digest.mapped_work_percentage,
-            digest.key_achievements.iter().map(|a| format!("• {}", a)).collect::<Vec<_>>().join("\n"),
-            digest.areas_needing_attention.iter().map(|a| format!("• {}", a)).collect::<Vec<_>>().join("\n"),
+            digest
+                .key_achievements
+                .iter()
+                .map(|a| format!("• {}", a))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            digest
+                .areas_needing_attention
+                .iter()
+                .map(|a| format!("• {}", a))
+                .collect::<Vec<_>>()
+                .join("\n"),
         );
 
         // In a real implementation, you would:
         // 1. Get the channel ID from workspace settings
         // 2. Send the message to that channel
         // 3. Handle errors gracefully
-        
+
         info!("Would send digest to workspace {}", workspace.team_id);
     }
 
@@ -292,28 +294,24 @@ async fn build_evidence_graph(
     // 2. Process them through the engine to extract relationships
     // 3. Update the graph database (e.g., Neo4j)
     // 4. Calculate new outcome progress metrics
-    
+
     info!("Evidence graph building completed");
     Ok(())
 }
 
 async fn check_system_performance(pool: &PgPool) -> Result<SystemMetrics, sqlx::Error> {
     // Query system performance metrics
-    let total_artifacts = sqlx::query!(
-        "SELECT COUNT(*) as count FROM artifacts"
-    )
-    .fetch_one(pool)
-    .await?
-    .count
-    .unwrap_or(0);
+    let total_artifacts = sqlx::query!("SELECT COUNT(*) as count FROM artifacts")
+        .fetch_one(pool)
+        .await?
+        .count
+        .unwrap_or(0);
 
-    let total_outcomes = sqlx::query!(
-        "SELECT COUNT(*) as count FROM outcomes"
-    )
-    .fetch_one(pool)
-    .await?
-    .count
-    .unwrap_or(0);
+    let total_outcomes = sqlx::query!("SELECT COUNT(*) as count FROM outcomes")
+        .fetch_one(pool)
+        .await?
+        .count
+        .unwrap_or(0);
 
     Ok(SystemMetrics {
         total_artifacts,
