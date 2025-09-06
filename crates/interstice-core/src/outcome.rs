@@ -587,7 +587,7 @@ impl OutcomeMapper {
 
                 }
                 
-                ArtifactType::Metric { value, metric_type, .. } => {
+                ArtifactType::Metric {   .. } => {
                     ("Performance Tracking", 0.70)
                 }
                 

@@ -3,8 +3,8 @@ use axum::{
     middleware,
     Router,
 };
-use interstice_adapters::{slack::SlackConfig, AdapterManager, PlatformAdapter, SlackAdapter};
-use interstice_core::{storage::PostgresStorage, IntersticeEngine, MLPredictor, StorageBackend, WorkspaceId};
+use interstice_adapters::{slack::SlackConfig, AdapterManager, PlatformAdapter, slack::SlackAdapter};
+use interstice_core::{storage::PostgresStorage, IntersticeEngine, MLPredictor, StorageBackend};
 use interstice_ml::{MLPipeline, adapters::MLPredictorAdapter};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -312,7 +312,7 @@ async fn initialize_adapters(
             .with_ml_pipeline(ml_pipeline.clone());
         
         slack_adapter = Some(Arc::new(adapter));
-        adapters.register(Box::new(adapter2) as Box<dyn PlatformAdapter>);
+        adapters.register(Arc::new(adapter2) as Arc<dyn PlatformAdapter>);
         info!("Slack adapter initialized with workspace {}", workspace_id);
     } else {
         warn!("Slack adapter not configured - missing SLACK_BOT_TOKEN or SLACK_SIGNING_SECRET");

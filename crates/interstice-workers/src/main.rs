@@ -1,4 +1,4 @@
-use interstice_core::{IntersticeEngine, Platform, ProcessedData};
+use interstice_core::IntersticeEngine;
 use interstice_ml::MLPipeline;
 use slack_morphism::prelude::*;
 use sqlx::PgPool;
@@ -244,7 +244,7 @@ async fn send_digest_to_slack(
     let session = client.open_session(token);
 
     // Get all Slack workspaces
-    let workspaces = sqlx::query!("SELECT team_id, bot_access_token FROM slack_workspaces")
+    let workspaces = sqlx::query!("SELECT team_id, access_token_encrypted FROM slack_workspaces")
         .fetch_all(pool)
         .await?;
 

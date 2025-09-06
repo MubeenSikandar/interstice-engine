@@ -326,7 +326,7 @@ impl ContinuousTrainer {
         // Process workspaces concurrently with controlled parallelism
         let results = stream::iter(workspaces)
             .map(|workspace_id| {
-                let trainer = self.clone();
+                let trainer = self;
                 async move {
                     trainer.train_workspace_with_timeout(workspace_id).await
                 }

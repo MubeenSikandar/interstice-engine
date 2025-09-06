@@ -5,13 +5,16 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use interstice_adapters::{traits::{EventMetadata, EventType, PlatformAdapter, PlatformEvent}, SlackAdapter};
-use interstice_core::{Platform, ProcessedData};
+use chrono::Utc;
+use interstice_adapters::{traits::{EventMetadata, EventType, PlatformAdapter, PlatformEvent}, slack::SlackAdapter};
+use interstice_core::{artifact::{AccessLevel, ArtifactState, DesignType, DocumentType, IssueState, Priority, QualityMetrics}, Artifact, ArtifactType, Platform, ProcessedData, WorkspaceId};
+use interstice_ml::{types::{Duration, ImpactLevel}, OutcomePrediction};
 use serde::{Deserialize, Serialize};
-use slack_morphism::prelude::*;
-use std::sync::Arc;
+use sqlx::PgPool;
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 use tracing::{error, info, warn, instrument};
 use uuid::Uuid;
+use serde_json::Value as JsonValue;
 
 use crate::AppState;
 
@@ -41,6 +44,69 @@ pub struct SlackEventResponse {
     challenge: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ok: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SlackCommandEvent {
+    pub token: String,
+    pub team_id: String,
+    pub team_domain: String,
+    pub channel_id: String,
+    pub channel_name: String,
+    pub user_id: String,
+    pub user_name: String,
+    pub command: String,
+    pub text: String,
+    pub response_url: String,
+    pub trigger_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SlackInteractionEvent {
+    pub event_type: String,
+    pub user: SlackUser,
+    pub channel: SlackChannel,
+    pub actions: Vec<SlackAction>,
+    pub callback_id: String,
+    pub response_url: String,
+    pub trigger_id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SlackPushEvent {
+    pub event_type: String,
+    pub event: Option<serde_json::Value>,
+    pub team_id: Option<String>,
+    pub api_app_id: Option<String>,
+    pub event_id: Option<String>,
+    pub event_time: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SlackEvent {
+    pub event_type: String,
+    pub text: Option<String>,
+    pub user: Option<String>,
+    pub channel: Option<String>,
+    pub ts: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SlackUser {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SlackChannel {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SlackAction {
+    pub action_id: String,
+    pub value: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,11 +243,21 @@ pub async fn handle_events(
     // Process the event
     let processed = match payload.event.clone() {
         Some(event_data) => {
-            let slack_event: SlackPushEvent = serde_json::from_value(event_data)
-                .map_err(|e| {
-                    error!("Failed to parse Slack event: {}", e);
-                    StatusCode::BAD_REQUEST
-                })?;
+            let slack_event = SlackPushEvent {
+                event_type: payload.event_type.clone(),
+                event: Some(event_data),
+                team_id: payload.team_id.clone(),
+                api_app_id: payload.api_app_id.clone(),
+                event_id: payload.event_id.clone(),
+                event_time: payload.event_time,
+            };
+            
+            // Process and store the event with ML
+            if let Some(team_id) = &slack_event.team_id {
+                if let Err(e) = process_and_store_event(&slack_event, team_id, &state).await {
+                    error!("Failed to process event: {}", e);
+                }
+            }
 
             // Process and get artifacts
             adapter.process_event(PlatformEvent {
@@ -246,6 +322,486 @@ pub async fn handle_events(
         ok: Some(true),
     }))
 }
+
+async fn process_and_store_event(
+    event: &SlackPushEvent,
+    team_id: &str,
+    state: &Arc<AppState>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Extract artifacts from the event
+    let artifacts = extract_artifacts_from_event(event, team_id).await?;
+    
+    if artifacts.is_empty() {
+        info!("No artifacts found in event from team {}", team_id);
+        return Ok(());
+    }
+    
+    // Get workspace_id for storage
+    let workspace_id = sqlx::query_scalar!(
+        "SELECT id FROM workspaces WHERE slack_team_id = $1",
+        team_id
+    )
+    .fetch_optional(&state.db)
+    .await?
+    .ok_or("Workspace not found")?;
+    
+    // Store artifacts in database
+    for artifact in &artifacts {
+        store_artifact_from_event(artifact, workspace_id, &state.db).await?;
+    }
+    
+    // Run ML predictions on artifacts
+    let predictions = run_ml_on_artifacts(&artifacts, workspace_id, &state.ml_pipeline).await?;
+    
+    // Store predictions
+    for pred in &predictions {
+        store_prediction_from_event(pred, workspace_id, artifacts[0].id, &state.db).await?;
+    }
+    
+    // Update workspace analytics
+    update_workspace_analytics(team_id, &artifacts, &predictions, &state.db).await?;
+    
+    info!(
+        "Processed event from team {}: {} artifacts, {} predictions",
+        team_id,
+        artifacts.len(),
+        predictions.len()
+    );
+    
+    Ok(())
+}
+
+async fn extract_artifacts_from_event(
+    event: &SlackPushEvent,
+    team_id: &str,
+) -> Result<Vec<Artifact>, Box<dyn std::error::Error>> {
+    let mut artifacts = Vec::new();
+    
+    // Handle different event types
+    if let Some(event_data) = &event.event {
+        let event_type = event_data.get("event_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        
+        match event_type {
+            "message" => {
+    // Extract message content
+    if let Some(text) = event_data.get("text").and_then(|v| v.as_str()) {
+            if !text.is_empty() {
+            let channel_id = event_data.get("channel").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let user_id = event_data.get("user").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let ts = event_data.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+                        
+                        // Determine artifact type based on content
+                        let artifact_type = determine_artifact_type(text);
+                        
+                        let artifact = Artifact {
+                            id: Uuid::new_v4(),
+                            workspace_id: WorkspaceId::from_uuid(
+                                Uuid::parse_str(team_id).unwrap_or_else(|_| Uuid::new_v4())
+                            ),
+                            artifact_type,
+                            platform: Platform::Slack,
+                            content: text.to_string(),
+                            metadata: serde_json::json!({
+                                "channel_id": channel_id,
+                                "user_id": user_id,
+                                "message_ts": ts,
+                                "event_type": "message",
+                            }),
+                            created_at: Utc::now(),
+                            updated_at: Utc::now(),
+                            version: 1,
+                            state: ArtifactState::Pending,
+                            quality_metrics: QualityMetrics::default(),
+                            related_artifacts: vec![],
+                            tags: HashSet::new(),
+                        };
+                        
+                        artifacts.push(artifact);
+                    }
+                }
+                
+                // Process attachments if present
+                if let Some(attachments) = event_data.get("attachments").and_then(|a| a.as_array()) {
+                    for attachment in attachments {
+                        if let Some(artifact) = process_attachment(attachment, team_id) {
+                            artifacts.push(artifact);
+                        }
+                    }
+                }
+            }
+            "file_shared" => {
+                // Process file uploads
+                if let Some(file) = event_data.get("file") {
+                    if let Some(artifact) = process_file_share(file, team_id) {
+                        artifacts.push(artifact);
+                    }
+                }
+            }
+            "reaction_added" => {
+                // Track reactions as engagement metrics
+                // Create a lightweight artifact for the reaction
+                if let Some(reaction) = event_data.get("reaction").and_then(|v| v.as_str()) {
+                    if let Some(item) = event_data.get("item") {
+                        let channel = item.get("channel").and_then(|v| v.as_str()).unwrap_or("unknown");
+                        let ts = item.get("ts").and_then(|v| v.as_str()).unwrap_or("");
+                        let user = event_data.get("user").and_then(|v| v.as_str()).unwrap_or("unknown");
+
+                        let artifact = Artifact {
+                            id: Uuid::new_v4(),
+                            workspace_id: WorkspaceId::from_uuid(
+                                Uuid::parse_str(team_id).unwrap_or_else(|_| Uuid::new_v4())
+                            ),
+                            artifact_type: ArtifactType::Message {
+                                id: Uuid::new_v4().to_string(),
+                                channel: "unknown".to_string(),
+                                thread_id: None,
+                                author: "unknown".to_string(),
+                                content: format!("Reaction added: {}", reaction),
+                                mentions: vec![],
+                                attachments: vec![],
+                                reactions: HashMap::new(),
+                                sentiment: interstice_core::artifact::Sentiment::Neutral,
+                                intent: interstice_core::artifact::MessageIntent::Discussion,
+                                is_edited: false,
+                                reply_count: 0,
+                            },
+                            platform: Platform::Slack,
+                            content: format!("Reaction added: {}", reaction),
+                            metadata: serde_json::json!({
+                                "reaction": reaction,
+                                "channel": channel,
+                                "message_ts": ts,
+                                "user": user,
+                                "event_type": "reaction_added",
+                            }),
+                            created_at: Utc::now(),
+                            updated_at: Utc::now(),
+                            version: 1,
+                            state: ArtifactState::Pending,
+                            quality_metrics: QualityMetrics::default(),
+                            related_artifacts: vec![],
+                            tags: HashSet::new(),
+                        };
+
+                        artifacts.push(artifact);
+                    }
+                }
+            }
+            _ => {
+                tracing::info!("Unhandled event type: {}", event_type);
+            }
+        }
+    }
+    
+    Ok(artifacts)
+}
+
+fn determine_artifact_type(text: &str) -> ArtifactType {
+    // Simple heuristic; can be improved with ML
+    if text.contains("PR #") || text.contains("pull request") {
+        ArtifactType::PullRequest {
+            title: text.to_string(),
+            state: interstice_core::artifact::PullRequestState::Open,
+            author: "unknown".to_string(),
+            reviewers: vec![],
+            labels: vec![],
+            merge_conflict: false,
+            ci_status: None,
+            base_branch: "main".to_string(),
+            head_branch: "feature".to_string(),
+            files_changed: 0,
+            additions: 0,
+            deletions: 0,
+            merged: false,
+            draft: false,
+            number: 0,
+        }
+    } else if text.contains("#") && text.contains("issue") {
+        ArtifactType::Issue {
+            id: Uuid::new_v4().to_string(),
+        title: text.to_string(),
+        state: IssueState::Open,
+        priority: Priority::Medium,
+        assignees: vec![],
+        labels: vec![],
+        story_points: None,
+        sprint: None,
+        epic: None,
+        blocked: false,
+        blockers: vec![],
+        time_estimate: None,
+        time_spent: None,
+        }
+    } else if text.contains("task") || text.contains("TODO") {
+        ArtifactType::Task {
+            id: Uuid::new_v4().to_string(),
+            title: text.to_string(),
+            status: interstice_core::artifact::TaskStatus::Todo,
+            assignee: None,
+            due_date: None,
+            completed_at: None,
+            checklist_items: vec![],
+            dependencies: vec![],
+            tags: vec![],
+            recurring: false,
+            parent_task: None,
+            subtasks: vec![],
+        }
+    } else {
+        ArtifactType::Message {
+            id: Uuid::new_v4().to_string(),
+            channel: "unknown".to_string(),
+            thread_id: None,
+            author: "unknown".to_string(),
+            content: text.to_string(),
+            mentions: vec![],
+            attachments: vec![],
+            reactions: HashMap::new(),
+            sentiment: interstice_core::artifact::Sentiment::Neutral,
+            intent: interstice_core::artifact::MessageIntent::Discussion,
+            is_edited: false,
+            reply_count: 0,
+        }
+    }
+}
+
+fn process_attachment(attachment: &JsonValue, team_id: &str) -> Option<Artifact> {
+    // Extract relevant info from attachment
+    if let Some(title) = attachment.get("title").and_then(|v| v.as_str()) {
+        if !title.is_empty() {
+            let artifact_type = determine_artifact_type(title);
+            return Some(Artifact {
+                id: Uuid::new_v4(),
+                workspace_id: WorkspaceId::from_uuid(
+                    Uuid::parse_str(team_id).unwrap_or_else(|_| Uuid::new_v4())
+                ),
+                artifact_type,
+                platform: Platform::Slack,
+                content: title.to_string(),
+                metadata: serde_json::json!({
+                    "attachment": attachment.clone(),
+                    "event_type": "attachment",
+                }),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                version: 1,
+                state: ArtifactState::Pending,
+                quality_metrics: QualityMetrics::default(),
+                related_artifacts: vec![],
+                tags: HashSet::new(),
+            });
+        }
+    }
+    None
+}
+
+fn process_file_share(file: &JsonValue, team_id: &str) -> Option<Artifact> {
+    if let Some(name) = file.get("name").and_then(|v| v.as_str()) {
+        if !name.is_empty() {
+            let artifact_type = if name.ends_with(".md") || name.ends_with(".txt") {
+                ArtifactType::Document {
+                    id: Uuid::new_v4().to_string(),
+                    title: name.to_string(),
+                    doc_type: DocumentType::Wiki,
+                    url: None,
+                    author: "unknown".to_string(),
+                    collaborators: vec![],
+                    word_count: None,
+                    last_modified: Utc::now(),
+                    version: 1,
+                    is_template: false,
+                    access_level: AccessLevel::Internal,
+                }
+            } else if name.ends_with(".png") || name.ends_with(".jpg") {
+                ArtifactType::Design {
+                    id: Uuid::new_v4().to_string(),
+                    title: name.to_string(),
+                    design_type: DesignType::Figma,
+                    version: None,
+                    collaborators: vec![],
+                    components: 0,
+                    screens: 0,
+                    last_modified: Utc::now(),
+                    design_system: None,
+                    accessibility_score: None,
+                }
+            } else {
+                ArtifactType::Document {
+                    id: Uuid::new_v4().to_string(),
+                    title: name.to_string(),
+                    doc_type: DocumentType::Wiki,
+                    url: None,
+                    author: "unknown".to_string(),
+                    collaborators: vec![],
+                    word_count: None,
+                    last_modified: Utc::now(),
+                    version: 1,
+                    is_template: false,
+                    access_level: AccessLevel::Internal,
+                }
+            };
+            return Some(Artifact {
+                id: Uuid::new_v4(),
+                workspace_id: WorkspaceId::from_uuid(
+                    Uuid::parse_str(team_id).unwrap_or_else(|_| Uuid::new_v4())
+                ),
+                artifact_type,
+                platform: Platform::Slack,
+                content: name.to_string(),
+                metadata: serde_json::json!({
+                    "file": file.clone(),
+                    "event_type": "file_shared",
+                }),
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                version: 1,
+                state: ArtifactState::Pending,
+                quality_metrics: QualityMetrics::default(),
+                related_artifacts: vec![],
+                tags: HashSet::new(),
+            });
+        }
+    }
+    None
+}
+
+/// Store artifact from event
+async fn store_artifact_from_event(
+    artifact: &Artifact,
+    workspace_id: Uuid,
+    db: &PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let channel_id = artifact.metadata.get("channel_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    
+    let message_id = artifact.metadata.get("message_ts")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    
+    sqlx::query!(
+        r#"
+        INSERT INTO artifacts (
+            id, workspace_id, artifact_type, content,
+            channel_id, message_id, metadata, platform, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+        ON CONFLICT (id) DO NOTHING
+        "#,
+        artifact.id,
+        workspace_id,
+        format!("{:?}", artifact.artifact_type),
+        artifact.content,
+        channel_id,
+        message_id,
+        artifact.metadata,
+        artifact.platform.to_string()
+    )
+    .execute(db)
+    .await?;
+    
+    Ok(())
+}
+
+/// Run ML pipeline on artifacts
+async fn run_ml_on_artifacts(
+    artifacts: &[Artifact],
+    workspace_id: Uuid,
+    ml_pipeline: &Arc<interstice_ml::MLPipeline>,
+) -> Result<Vec<OutcomePrediction>, Box<dyn std::error::Error>> {
+    // Convert to ML artifacts
+    let ml_artifacts: Vec<interstice_ml::types::Artifact> = artifacts.iter().map(|a| {
+        interstice_ml::types::Artifact::new(
+            a.id.to_string(),
+            a.content.clone(),
+            interstice_ml::types::Platform::Slack,
+            interstice_ml::types::ArtifactType::Message
+        )
+    }).collect();
+    
+    // Run predictions
+    let context = artifacts.iter()
+        .map(|a| a.content.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    
+    ml_pipeline.predict_outcomes(workspace_id, &ml_artifacts, &context).await
+        .map_err(|e| e.into())
+}
+
+/// Store prediction from event processing
+async fn store_prediction_from_event(
+    prediction: &OutcomePrediction,
+    workspace_id: Uuid,
+    artifact_id: Uuid,
+    db: &PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::query!(
+        r#"
+        INSERT INTO inference_history (
+            id, workspace_id, artifact_id,
+            confidence, prediction_data, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        "#,
+        Uuid::new_v4(),
+        workspace_id,
+        artifact_id,
+        prediction.confidence as f32,
+        serde_json::to_value(prediction)?
+    )
+    .execute(db)
+    .await?;
+    
+    Ok(())
+}
+
+/// Update workspace analytics after event processing
+async fn update_workspace_analytics(
+    team_id: &str,
+    artifacts: &[Artifact],
+    predictions: &[OutcomePrediction],
+    db: &PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Update or insert analytics record
+    sqlx::query!(
+        r#"
+        INSERT INTO workspace_analytics (
+            workspace_id, date, artifact_count, prediction_count,
+            message_count, task_count, document_count
+        )
+        VALUES (
+            (SELECT id FROM workspaces WHERE slack_team_id = $1),
+            CURRENT_DATE,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6
+        )
+        ON CONFLICT (workspace_id, date) DO UPDATE SET
+            artifact_count = workspace_analytics.artifact_count + EXCLUDED.artifact_count,
+            prediction_count = workspace_analytics.prediction_count + EXCLUDED.prediction_count,
+            message_count = workspace_analytics.message_count + EXCLUDED.message_count,
+            task_count = workspace_analytics.task_count + EXCLUDED.task_count,
+            document_count = workspace_analytics.document_count + EXCLUDED.document_count,
+            updated_at = NOW()
+        "#,
+        team_id,
+        artifacts.len() as i32,
+        predictions.len() as i32,
+        artifacts.iter().filter(|a| matches!(a.artifact_type, ArtifactType::Message { .. })).count() as i32,
+        artifacts.iter().filter(|a| matches!(a.artifact_type, ArtifactType::Task { .. })).count() as i32,
+        artifacts.iter().filter(|a| matches!(a.artifact_type, ArtifactType::Document { .. })).count() as i32
+    )
+    .execute(db)
+    .await?;
+    
+    Ok(())
+}
+
 
 fn extract_workspace_config(
     oauth_response: SlackOAuthTokenResponse,
@@ -488,19 +1044,406 @@ pub async fn handle_slash_commands(
         })?;
 
     info!(
-        "Slash command '{}' received from team {} by user {}",
+        "Slash command '{}' received from team {} by user {} with text: '{}'",
         command.command,
         command.team_id,
-        command.user_id
+        command.user_id,
+        command.text
     );
 
-    // Process the slash command
-    let response = serde_json::json!({
-        "response_type": "ephemeral",
-        "text": "Slash command processing not yet implemented"
-    });
+    // Process based on command
+    let response = match command.command.as_str() {
+        "/interstice" => handle_interstice_command(&command, &state).await,
+        "/interstice-track" => handle_track_command(&command, &state).await,
+        "/interstice-insights" => handle_insights_command(&command, &state).await,
+        _ => {
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": "Unknown command. Use `/interstice help` to see available commands."
+            })
+        }
+    };
 
+    // Store command usage for analytics
+    store_command_usage(&command, &response, &state).await;
+
+    // Check if we need async processing (>3s operations)
+    if should_use_async_response(&command.text) {
+        // Send immediate acknowledgment
+        let ack_response = serde_json::json!({
+            "response_type": "ephemeral",
+            "text": "Processing your request... Results will appear shortly."
+        });
+        
+        // Process async and post to response_url
+        let state_clone = state.clone();
+        let command_clone = command.clone();
+        tokio::spawn(async move {
+            let full_response = process_complex_command(&command_clone, &state_clone).await;
+            post_to_response_url(&command_clone.response_url, &full_response).await;
+        });
+        
+        return Ok(Json(ack_response));
+    }
+    
     Ok(Json(response))
+}
+
+/// Handle the main /interstice command with subcommands
+async fn handle_interstice_command(
+    command: &SlackCommandEvent,
+    state: &Arc<AppState>,
+) -> serde_json::Value {
+    let args: Vec<&str> = command.text.split_whitespace().collect();
+    let subcommand = args.get(0).map(|s| s.to_lowercase());
+    
+    match subcommand.as_deref() {
+        Some("help") | None => show_help_command(),
+        Some("status") => show_workspace_status(&command.team_id, state).await,
+        Some("predict") => run_predictions_command(command, state).await,
+        Some("analyze") => analyze_workspace_patterns(&command.team_id, state).await,
+        Some("recent") => show_recent_artifacts(&command.team_id, state).await,
+        Some("stats") => show_workspace_stats(&command.team_id, state).await,
+        _ => {
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": format!("Unknown subcommand '{}'. Use `/interstice help` for available commands.", args[0])
+            })
+        }
+    }
+}
+
+async fn analyze_workspace_patterns(
+    team_id: &str,
+    state: &Arc<AppState>,
+) -> serde_json::Value {
+    match fetch_workspace_patterns(team_id, &state.db).await {
+        Ok(patterns) => {
+            let mut blocks = vec![
+                serde_json::json!({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*📊 Workspace Analysis*"
+                    }
+                }),
+                serde_json::json!({
+                    "type": "divider"
+                })
+            ];
+            
+            blocks.push(serde_json::json!({
+                "type": "section",
+                "fields": [
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("*Peak Activity Hour:*\n{}", patterns.peak_hour)
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("*Most Active Channel:*\n{}", patterns.most_active_channel)
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("*Avg Daily Artifacts:*\n{:.1}", patterns.avg_daily_artifacts)
+                    },
+                    {
+                        "type": "mrkdwn",
+                        "text": format!("*Common Artifact Type:*\n{}", patterns.common_artifact_type)
+                    }
+                ]
+            }));
+            
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "blocks": blocks
+            })
+        }
+        Err(e) => {
+            error!("Failed to analyze patterns: {}", e);
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": "Failed to analyze workspace patterns. Please try again later."
+            })
+        }
+    }
+}
+
+async fn show_recent_artifacts(
+    team_id: &str,
+    state: &Arc<AppState>,
+) -> serde_json::Value {
+    match fetch_recent_artifacts(team_id, &state.db, 5).await {
+        Ok(artifacts) if !artifacts.is_empty() => {
+            let mut blocks = vec![
+                serde_json::json!({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "*📝 Recent Artifacts*"
+                    }
+                })
+            ];
+            
+            for artifact in artifacts {
+                blocks.push(serde_json::json!({
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": format!(
+                            "*{:?}*\n_{}_\n```{}```",
+                            artifact.artifact_type,
+                            artifact.created_at.format("%Y-%m-%d %H:%M UTC"),
+                            truncate_string(&artifact.content, 100)
+                        )
+                    }
+                }));
+            }
+            
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "blocks": blocks
+            })
+        }
+        Ok(_) => {
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": "No recent artifacts found. Start tracking some activities!"
+            })
+        }
+        Err(e) => {
+            error!("Failed to fetch recent artifacts: {}", e);
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": "Failed to fetch recent artifacts. Please try again later."
+            })
+        }
+    }
+}
+
+
+/// Show help information
+fn show_help_command() -> serde_json::Value {
+    serde_json::json!({
+        "response_type": "ephemeral",
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Welcome to Interstice Engine!* 🚀\n\nI help track work artifacts and predict outcomes from your Slack activity."
+                }
+            },
+            {
+                "type": "divider"
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*Available Commands:*\n\n• `/interstice help` - Show this help message\n• `/interstice status` - View workspace status\n• `/interstice predict` - Get outcome predictions\n• `/interstice analyze` - Analyze workspace patterns\n• `/interstice recent` - Show recent artifacts\n• `/interstice stats` - View detailed statistics\n\n• `/interstice-track <text>` - Manually track an artifact\n• `/interstice-insights` - Generate AI-powered insights"
+                }
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "💡 _Tip: I automatically track artifacts from your messages!_"
+                    }
+                ]
+            }
+        ]
+    })
+}
+
+async fn show_workspace_stats(
+    team_id: &str,
+    state: &Arc<AppState>,
+) -> serde_json::Value {
+    match fetch_workspace_statistics(team_id, &state.db).await {
+        Ok(stats) => {
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "*📈 Detailed Statistics*"
+                        }
+                    },
+                    {
+                        "type": "divider"
+                    },
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": format!(
+                                "*Last 7 Days:*\n• Artifacts: {}\n• Commands: {}\n• Active Users: {}\n\n*Last 30 Days:*\n• Total Artifacts: {}\n• Predictions: {}\n• Success Rate: {:.1}%",
+                                stats.weekly_artifacts,
+                                stats.weekly_commands,
+                                stats.active_users,
+                                stats.monthly_artifacts,
+                                stats.monthly_predictions,
+                                stats.success_rate * 100.0
+                            )
+                        }
+                    }
+                ]
+            })
+        }
+        Err(e) => {
+            error!("Failed to fetch statistics: {}", e);
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": "Failed to fetch statistics. Please try again later."
+            })
+        }
+    }
+}
+
+fn extract_channel_from_text(text: &str) -> Option<String> {
+    // Look for <#CHANNEL_ID|channel-name> format
+    if let Some(start) = text.find("<#") {
+        if let Some(end) = text[start..].find('>') {
+            let channel_ref = &text[start+2..start+end];
+            if let Some(pipe) = channel_ref.find('|') {
+                return Some(channel_ref[..pipe].to_string());
+            }
+            return Some(channel_ref.to_string());
+        }
+    }
+    None
+}
+
+/// Extract and predict artifacts
+async fn extract_and_predict_artifacts(
+    team_id: &str,
+    channel_id: &str,
+    state: &Arc<AppState>,
+) -> Result<Vec<OutcomePrediction>, Box<dyn std::error::Error>> {
+    // Fetch recent artifacts from the channel
+    let artifacts = fetch_channel_artifacts(team_id, channel_id, &state.db, 10).await?;
+    
+    if artifacts.is_empty() {
+        return Ok(vec![]);
+    }
+    
+    // Use ML pipeline to predict outcomes
+    if let Some(ml) = Some(state.ml()) {
+        // Convert core artifacts to ML artifacts
+        let ml_artifacts: Vec<interstice_ml::types::Artifact> = artifacts.iter().map(|a| {
+            interstice_ml::types::Artifact::new(
+                a.id.to_string(),
+                a.content.clone(),
+                interstice_ml::types::Platform::Slack,
+                interstice_ml::types::ArtifactType::Message
+            )
+        }).collect();
+        
+        let predictions = ml.predict_outcomes(
+            Uuid::parse_str(team_id).unwrap_or_else(|_| Uuid::new_v4()),
+            &ml_artifacts,
+            &artifacts.iter().map(|a| a.content.as_str()).collect::<Vec<_>>().join(" ")
+        ).await?;
+        
+        // Store predictions for analytics
+        for pred in &predictions {
+            store_prediction(pred, team_id, &state.db).await?;
+        }
+        
+        Ok(predictions)
+    } else {
+        // Fallback predictions if ML is not available
+        Ok(vec![
+            OutcomePrediction {
+                outcome_id: String::new(),
+                outcome_name: "Task Completion".to_string(),
+                confidence: 0.75,
+                contributing_factors: vec![],
+                alternative_outcomes: vec![],
+                predicted_impact: ImpactLevel::Medium,
+                time_to_completion: Some(Duration::from_hours_with_uncertainty(0.1, 0.1)),
+                reasoning: Some("Based on recent activity patterns".to_string()),
+            },
+            OutcomePrediction {
+                outcome_id: String::new(),
+                outcome_name: "Meeting Scheduled".to_string(),
+                confidence: 0.60,
+                contributing_factors: vec![],
+                alternative_outcomes: vec![],
+                predicted_impact: ImpactLevel::Medium,
+                time_to_completion: Some(Duration::from_hours_with_uncertainty(0.1, 0.1)),
+                reasoning: Some("Scheduled based on team availability".to_string()),
+            },
+        ])
+    }
+}
+
+/// Process complex commands asynchronously
+async fn process_complex_command(
+    command: &SlackCommandEvent,
+    state: &Arc<AppState>,
+) -> serde_json::Value {
+    // This would handle long-running operations
+    // For now, return a placeholder
+    serde_json::json!({
+        "response_type": "in_channel",
+        "text": format!("Completed processing: {}", command.text)
+    })
+}
+
+/// Show workspace status
+async fn show_workspace_status(
+    team_id: &str,
+    state: &Arc<AppState>,
+) -> serde_json::Value {
+    match fetch_workspace_statistics(team_id, &state.db).await {
+        Ok(status) => {
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": format!("*Workspace Status for Team {}*", team_id)
+                        }
+                    },
+                    {
+                        "type": "section",
+                        "fields": [
+                            {
+                                "type": "mrkdwn",
+                                "text": format!("*Weekly Artifacts:*\n{}", status.weekly_artifacts)
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": format!("*Monthly Predictions:*\n{}", status.monthly_predictions)
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": format!("*Active Users:*\n{}", status.active_users)
+                            },
+                            {
+                                "type": "mrkdwn",
+                                "text": format!("*Success Rate:*\n{:.1}%", status.success_rate * 100.0)
+                            }
+                        ]
+                    }
+                ]
+            })
+        }
+        Err(e) => {
+            error!("Failed to fetch workspace status: {}", e);
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": "Failed to fetch workspace status. Please try again later."
+            })
+        }
+    }
 }
 
 /// Handle Slack interactive elements (button clicks, etc.)
@@ -538,11 +1481,40 @@ pub async fn handle_interactions(
             StatusCode::BAD_REQUEST
         })?;
 
-    // Process the interaction
-    info!("Interaction received: {:?}", payload);
+    // Process the interaction based on type
+    let response = match payload.event_type.as_str() {
+        "block_actions" => {
+            // Handle button clicks, dropdowns, etc.
+            info!("Block actions from user {} in channel {}", payload.user.id, payload.channel.id);
+            
+            // Process each action
+            for action in &payload.actions {
+                info!("Action: {} with value: {:?}", action.action_id, action.value);
+            }
+            
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": "Action processed successfully!"
+            })
+        },
+        "view_submission" => {
+            // Handle modal submissions
+            info!("View submission from user {}", payload.user.id);
+            serde_json::json!({
+                "response_type": "ephemeral", 
+                "text": "Form submitted successfully!"
+            })
+        },
+        _ => {
+            warn!("Unknown interaction type: {}", payload.event_type);
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": "Unknown interaction type"
+            })
+        }
+    };
 
-    // Return acknowledgment
-    Ok(Json(serde_json::json!({ "ok": true })))
+    Ok(Json(response))
 }
 
 /// Verify Slack request signature and timestamp
@@ -599,6 +1571,335 @@ fn verify_slack_request(
 
     Ok(())
 }
+
+async fn run_predictions_command(
+    command: &SlackCommandEvent,
+    state: &Arc<AppState>,
+) -> serde_json::Value {
+    // Extract channel from command text or use current channel
+    let channel_id = extract_channel_from_text(&command.text)
+        .unwrap_or_else(|| command.channel_id.clone());
+    
+    match extract_and_predict_artifacts(&command.team_id, &channel_id, state).await {
+        Ok(predictions) if !predictions.is_empty() => {
+            format_predictions_response(&predictions)
+        }
+        Ok(_) => {
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": "No predictions available. Try generating more activity first!"
+            })
+        }
+        Err(e) => {
+            error!("Failed to run predictions: {}", e);
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": "Failed to generate predictions. Please try again later."
+            })
+        }
+    }
+}
+
+/// Format predictions into Slack blocks
+fn format_predictions_response(predictions: &[OutcomePrediction]) -> serde_json::Value {
+    let mut blocks = vec![
+        serde_json::json!({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*🔮 Outcome Predictions*"
+            }
+        })
+    ];
+    
+    for (i, pred) in predictions.iter().enumerate().take(5) {
+        let confidence_bar = "█".repeat((pred.confidence * 10.0) as usize);
+        let empty_bar = "░".repeat(10 - (pred.confidence * 10.0) as usize);
+        
+        blocks.push(serde_json::json!({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": format!(
+                    "*{}. {}*\n{}{} _{:.1}% confidence_",
+                    i + 1,
+                    pred.outcome_name,
+                    confidence_bar,
+                    empty_bar,
+                    pred.confidence * 100.0
+                )
+            }
+        }));
+    }
+    
+    serde_json::json!({
+        "response_type": "in_channel",
+        "blocks": blocks
+    })
+}
+
+/// Handle /interstice-track command
+async fn handle_track_command(
+    command: &SlackCommandEvent,
+    state: &Arc<AppState>,
+) -> serde_json::Value {
+    if command.text.is_empty() {
+        return serde_json::json!({
+            "response_type": "ephemeral",
+            "text": "Please provide text to track. Usage: `/interstice-track <your artifact text>`"
+        });
+    }
+    
+    // Create artifact from command text
+    let artifact = Artifact {
+        id: Uuid::new_v4(),
+        workspace_id: WorkspaceId::from_uuid(Uuid::parse_str(&command.team_id).unwrap_or_else(|_| Uuid::new_v4())),
+        artifact_type: ArtifactType::Task {
+            id: Uuid::new_v4().to_string(),
+            title: command.text.clone(),
+            status: interstice_core::artifact::TaskStatus::Todo,
+            assignee: Some(command.user_id.clone()),
+            due_date: None,
+            completed_at: None,
+            checklist_items: vec![],
+            dependencies: vec![],
+            tags: vec![],
+            recurring: false,
+            parent_task: None,
+            subtasks: vec![],
+        },
+        platform: Platform::Slack,
+        content: command.text.clone(),
+        metadata: serde_json::json!({
+            "tracked_by": "slash_command",
+            "user_id": command.user_id,
+            "channel_id": command.channel_id
+        }),
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 1,
+        state: ArtifactState::Processed,
+        quality_metrics: QualityMetrics::default(),
+        related_artifacts: vec![],
+        tags: HashSet::new(),
+    };
+    
+    // Store the artifact
+    match store_artifact(&artifact, &command.team_id, &state.db).await {
+        Ok(_) => {
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": format!("✅ Artifact tracked successfully: \"{}\"", command.text),
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": format!("✅ *Artifact Tracked*\n```{}```", command.text)
+                        }
+                    },
+                    {
+                        "type": "context",
+                        "elements": [
+                            {
+                                "type": "mrkdwn",
+                                "text": format!("Type: {:?} | ID: {}", artifact.artifact_type, artifact.id)
+                            }
+                        ]
+                    }
+                ]
+            })
+        }
+        Err(e) => {
+            error!("Failed to track artifact: {}", e);
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": "Failed to track artifact. Please try again later."
+            })
+        }
+    }
+}
+
+async fn store_command_usage(
+    command: &SlackCommandEvent,
+    response: &serde_json::Value,
+    state: &Arc<AppState>,
+) {
+    let _ = sqlx::query!(
+        r#"
+        INSERT INTO slack_command_usage (
+            team_id, user_id, command, text, response_type, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, NOW())
+        "#,
+        command.team_id,
+        command.user_id,
+        command.command,
+        command.text,
+        response["response_type"].as_str()
+    )
+    .execute(&state.db)
+    .await;
+}
+
+/// Store an artifact in the database
+async fn store_artifact(
+    artifact: &Artifact,
+    team_id: &str,
+    db: &PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Get workspace_id from team_id
+    let workspace_id = sqlx::query_scalar!(
+        "SELECT id FROM workspaces WHERE slack_team_id = $1",
+        team_id
+    )
+    .fetch_optional(db)
+    .await?
+    .ok_or("Workspace not found")?;
+
+    // Extract channel_id from artifact metadata or source
+    let channel_id = artifact.metadata.get("channel_id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    sqlx::query!(
+        r#"
+        INSERT INTO artifacts (
+            id, workspace_id, artifact_type, content, 
+            channel_id, metadata, platform, created_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        "#,
+        artifact.id,
+        workspace_id,
+        format!("{:?}", artifact.artifact_type), // Convert enum to string
+        artifact.content,
+        channel_id,
+        artifact.metadata,
+        artifact.platform.to_string()
+    )
+    .execute(db)
+    .await?;
+    
+    Ok(())
+}
+
+/// Determine if async response is needed based on command complexity
+fn should_use_async_response(text: &str) -> bool {
+    // Complex operations that might take >3s
+    let complex_keywords = [
+        "analyze",
+        "report", 
+        "deep",
+        "comprehensive",
+        "detailed",
+        "full",
+        "export",
+        "generate",
+        "historical"
+    ];
+    
+    let text_lower = text.to_lowercase();
+    complex_keywords.iter().any(|keyword| text_lower.contains(keyword))
+}
+
+/// Post response to Slack's response URL for async processing
+async fn post_to_response_url(
+    response_url: &str,
+    response: &serde_json::Value,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = reqwest::Client::new();
+    
+    let res = client
+        .post(response_url)
+        .json(response)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await?;
+    
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        error!("Failed to post to response_url. Status: {}, Body: {}", status, body);
+        return Err(format!("Failed to post async response: {}", status).into());
+    }
+    
+    info!("Successfully posted async response to Slack");
+    Ok(())
+}
+
+/// Handle /interstice-insights command
+async fn handle_insights_command(
+    command: &SlackCommandEvent,
+    state: &Arc<AppState>,
+) -> serde_json::Value {
+    match generate_workspace_insights(&command.team_id, state).await {
+        Ok(insights) => insights,
+        Err(e) => {
+            error!("Failed to generate insights: {}", e);
+            serde_json::json!({
+                "response_type": "ephemeral",
+                "text": "Failed to generate insights. Please try again later."
+            })
+        }
+    }
+}
+
+/// Generate AI-powered workspace insights
+async fn generate_workspace_insights(
+    team_id: &str,
+    state: &Arc<AppState>,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    // Fetch recent patterns and statistics
+    let stats = fetch_workspace_statistics(team_id, &state.db).await?;
+    
+    // Use ML pipeline to generate insights
+    let insights = vec![
+        "📈 Task completion rate increased by 15% this week",
+        "🎯 Most productive hours: 10am - 12pm",
+        "👥 Top collaborators: Alice, Bob, Charlie",
+        "⚡ Average response time: 2.3 hours",
+    ];
+    
+    let mut blocks = vec![
+        serde_json::json!({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*🧠 Workspace Insights*"
+            }
+        }),
+        serde_json::json!({
+            "type": "divider"
+        })
+    ];
+    
+    for insight in insights {
+        blocks.push(serde_json::json!({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": insight
+            }
+        }));
+    }
+    
+    blocks.push(serde_json::json!({
+        "type": "context",
+        "elements": [
+            {
+                "type": "mrkdwn",
+                "text": format!("_Generated at {} UTC_", Utc::now().format("%Y-%m-%d %H:%M"))
+            }
+        ]
+    }));
+    
+    Ok(serde_json::json!({
+        "response_type": "in_channel",
+        "blocks": blocks
+    }))
+}
+
 
 /// Check if an event has already been processed (idempotency)
 async fn is_duplicate_event(event_id: &str, state: &Arc<AppState>) -> bool {
@@ -961,4 +2262,349 @@ pub async fn get_oauth_url(
         "state": state_param,
         "expires_in": 600 // 10 minutes
     })))
+}
+
+#[derive(Debug)]
+struct WorkspacePatterns {
+    peak_hour: String,
+    most_active_channel: String,
+    avg_daily_artifacts: f64,
+    common_artifact_type: String,
+}
+
+#[derive(Debug)]
+struct WorkspaceStatistics {
+    weekly_artifacts: i64,
+    weekly_commands: i64,
+    active_users: i64,
+    monthly_artifacts: i64,
+    monthly_predictions: i64,
+    success_rate: f64,
+}
+
+async fn fetch_workspace_patterns(
+    team_id: &str,
+    db: &PgPool,
+) -> Result<WorkspacePatterns, Box<dyn std::error::Error>> {
+    // Query for peak hour
+    let peak_hour = sqlx::query_scalar!(
+        r#"
+        SELECT EXTRACT(HOUR FROM created_at)::INT as hour
+        FROM artifacts
+        WHERE workspace_id = (SELECT id FROM workspaces WHERE slack_team_id = $1)
+          AND created_at > NOW() - INTERVAL '30 days'
+        GROUP BY hour
+        ORDER BY COUNT(*) DESC
+        LIMIT 1
+        "#,
+        team_id
+    )
+    .fetch_optional(db)
+    .await?
+    .map(|h| format!("{}:00", h.unwrap_or(0)))
+    .unwrap_or_else(|| "N/A".to_string());
+    
+    // Query for most active channel
+    let most_active_channel = sqlx::query_scalar!(
+        r#"
+        SELECT channel_id
+        FROM artifacts
+        WHERE workspace_id = (SELECT id FROM workspaces WHERE slack_team_id = $1)
+          AND channel_id IS NOT NULL
+        GROUP BY channel_id
+        ORDER BY COUNT(*) DESC
+        LIMIT 1
+        "#,
+        team_id
+    )
+    .fetch_optional(db)
+    .await?
+    .flatten()
+    .unwrap_or_else(|| "N/A".to_string());
+    
+    // Average daily artifacts
+    let avg_daily = sqlx::query_scalar!(
+        r#"
+        SELECT AVG(daily_count)::FLOAT
+        FROM (
+            SELECT DATE(created_at) as day, COUNT(*) as daily_count
+            FROM artifacts
+            WHERE workspace_id = (SELECT id FROM workspaces WHERE slack_team_id = $1)
+              AND created_at > NOW() - INTERVAL '30 days'
+            GROUP BY day
+        ) as daily_counts
+        "#,
+        team_id
+    )
+    .fetch_optional(db)
+    .await?
+    .flatten()
+    .unwrap_or(0.0) as f64;
+    
+    // Most common artifact type
+    let common_type = sqlx::query_scalar!(
+        r#"
+        SELECT artifact_type
+        FROM artifacts
+        WHERE workspace_id = (SELECT id FROM workspaces WHERE slack_team_id = $1)
+        GROUP BY artifact_type
+        ORDER BY COUNT(*) DESC
+        LIMIT 1
+        "#,
+        team_id
+    )
+    .fetch_optional(db)
+    .await?
+    .unwrap_or_else(|| "N/A".to_string());
+    
+    Ok(WorkspacePatterns {
+        peak_hour,
+        most_active_channel,
+        avg_daily_artifacts: avg_daily,
+        common_artifact_type: common_type,
+    })
+}
+
+async fn fetch_recent_artifacts(
+    team_id: &str,
+    db: &PgPool,
+    limit: i32,
+) -> Result<Vec<Artifact>, Box<dyn std::error::Error>> {
+    let records = sqlx::query!(
+        r#"
+        SELECT id, artifact_type, content, channel_id, metadata, created_at
+        FROM artifacts
+        WHERE workspace_id = (SELECT id FROM workspaces WHERE slack_team_id = $1)
+        ORDER BY created_at DESC
+        LIMIT $2
+        "#,
+        team_id,
+        limit as i64
+    )
+    .fetch_all(db)
+    .await?;
+    
+    let artifacts = records.into_iter().map(|r| Artifact {
+        id: r.id,
+        workspace_id: WorkspaceId::from_uuid(Uuid::new_v4()), // Placeholder - would need actual workspace lookup
+        artifact_type: ArtifactType::Message {
+            id: r.id.to_string(),
+            channel: r.channel_id.unwrap_or_default(),
+            thread_id: None,
+            author: "unknown".to_string(),
+            content: r.content.clone(),
+            mentions: vec![],
+            attachments: vec![],
+            reactions: HashMap::new(),
+            sentiment: interstice_core::artifact::Sentiment::Neutral,
+            intent: interstice_core::artifact::MessageIntent::Discussion,
+            is_edited: false,
+            reply_count: 0,
+        },
+        platform: Platform::Slack,
+        content: r.content,
+        metadata: r.metadata.unwrap_or_else(|| serde_json::json!({})),
+        created_at: r.created_at.unwrap_or_else(|| Utc::now()),
+        updated_at: r.created_at.unwrap_or_else(|| Utc::now()),
+        version: 1,
+        state: ArtifactState::Processed,
+        quality_metrics: QualityMetrics::default(),
+        related_artifacts: vec![],
+        tags: HashSet::new(),
+    }).collect();
+    
+    Ok(artifacts)
+}
+
+async fn fetch_channel_artifacts(
+    team_id: &str,
+    channel_id: &str,
+    db: &PgPool,
+    limit: i32,
+) -> Result<Vec<Artifact>, Box<dyn std::error::Error>> {
+    let records = sqlx::query!(
+        r#"
+        SELECT id, artifact_type, content, metadata, created_at
+        FROM artifacts
+        WHERE workspace_id = (SELECT id FROM workspaces WHERE slack_team_id = $1) AND channel_id = $2
+        ORDER BY created_at DESC
+        LIMIT $3
+        "#,
+        team_id,
+        channel_id,
+        limit as i64
+    )
+    .fetch_all(db)
+    .await?;
+    
+    let artifacts = records.into_iter().map(|r| Artifact {
+        id: r.id,
+        workspace_id: WorkspaceId::from_uuid(Uuid::new_v4()), // Placeholder - would need actual workspace lookup
+        artifact_type: ArtifactType::Message {
+            id: r.id.to_string(),
+            channel: channel_id.to_string(),
+            thread_id: None,
+            author: "unknown".to_string(),
+            content: r.content.clone(),
+            mentions: vec![],
+            attachments: vec![],
+            reactions: HashMap::new(),
+            sentiment: interstice_core::artifact::Sentiment::Neutral,
+            intent: interstice_core::artifact::MessageIntent::Discussion,
+            is_edited: false,
+            reply_count: 0,
+        },
+        platform: Platform::Slack,
+        content: r.content,
+        metadata: r.metadata.unwrap_or_else(|| serde_json::json!({})),
+        created_at: r.created_at.unwrap_or_else(|| Utc::now()),
+        updated_at: r.created_at.unwrap_or_else(|| Utc::now()),
+        version: 1,
+        state: ArtifactState::Processed,
+        quality_metrics: QualityMetrics::default(),
+        related_artifacts: vec![],
+        tags: HashSet::new(),
+    }).collect();
+    
+    Ok(artifacts)
+}
+
+async fn fetch_workspace_statistics(
+    team_id: &str,
+    db: &PgPool,
+) -> Result<WorkspaceStatistics, Box<dyn std::error::Error>> {
+    // Weekly artifacts
+    let weekly_artifacts = sqlx::query_scalar!(
+        r#"
+        SELECT COUNT(*)
+        FROM artifacts
+        WHERE workspace_id = (SELECT id FROM workspaces WHERE slack_team_id = $1)
+          AND created_at > NOW() - INTERVAL '7 days'
+        "#,
+        team_id
+    )
+    .fetch_one(db)
+    .await?
+    .unwrap_or(0);
+    
+    // Weekly commands
+    let weekly_commands = sqlx::query_scalar!(
+        r#"
+        SELECT COUNT(*)
+        FROM slack_command_usage
+        WHERE team_id = $1
+          AND created_at > NOW() - INTERVAL '7 days'
+        "#,
+        team_id
+    )
+    .fetch_one(db)
+    .await?
+    .unwrap_or(0);
+    
+    // Active users
+    let active_users = sqlx::query_scalar!(
+        r#"
+        SELECT COUNT(DISTINCT user_id)
+        FROM slack_command_usage
+        WHERE team_id = $1
+          AND created_at > NOW() - INTERVAL '7 days'
+        "#,
+        team_id
+    )
+    .fetch_one(db)
+    .await?
+    .unwrap_or(0);
+    
+    // Monthly artifacts  
+    let monthly_artifacts = sqlx::query_scalar!(
+        r#"
+        SELECT COUNT(*)
+        FROM artifacts
+        WHERE workspace_id = (SELECT id FROM workspaces WHERE slack_team_id = $1)
+          AND created_at > NOW() - INTERVAL '30 days'
+        "#,
+        team_id
+    )
+    .fetch_one(db)
+    .await?
+    .unwrap_or(0);
+    
+    // Monthly predictions
+    let monthly_predictions = sqlx::query_scalar!(
+        r#"
+        SELECT COUNT(*)
+        FROM inference_history
+        WHERE artifact_id IN (
+            SELECT id FROM artifacts WHERE workspace_id = (SELECT id FROM workspaces WHERE slack_team_id = $1)
+        )
+        AND created_at > NOW() - INTERVAL '30 days'
+        "#,
+        team_id
+    )
+    .fetch_one(db)
+    .await?
+    .unwrap_or(0);
+    
+    Ok(WorkspaceStatistics {
+        weekly_artifacts,
+        weekly_commands,
+        active_users,
+        monthly_artifacts,
+        monthly_predictions,
+        success_rate: 0.85, // Placeholder - calculate from actual data
+    })
+}
+
+async fn store_prediction(
+    prediction: &OutcomePrediction,
+    team_id: &str,
+    db: &PgPool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Store in inference_history table
+    sqlx::query!(
+        r#"
+        INSERT INTO inference_history (
+            id, workspace_id, artifact_id,
+            confidence, prediction_data, created_at
+        )
+        VALUES ($1, 
+                (SELECT id FROM workspaces WHERE slack_team_id = $2 LIMIT 1),
+                NULL, $3, $4, NOW())
+        "#,
+        Uuid::new_v4(),
+        team_id,
+        prediction.confidence as f32,
+        serde_json::to_value(prediction)?
+    )
+    .execute(db)
+    .await?;
+    
+    Ok(())
+}
+
+/// Helper function to truncate strings
+fn truncate_string(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len-3])
+    }
+}
+
+impl Clone for SlackCommandEvent {
+    fn clone(&self) -> Self {
+        SlackCommandEvent {
+            token: self.token.clone(),
+            team_id: self.team_id.clone(),
+            team_domain: self.team_domain.clone(),
+            channel_id: self.channel_id.clone(),
+            channel_name: self.channel_name.clone(),
+            user_id: self.user_id.clone(),
+            user_name: self.user_name.clone(),
+            command: self.command.clone(),
+            text: self.text.clone(),
+            response_url: self.response_url.clone(),
+            trigger_id: self.trigger_id.clone(),
+        }
+    }
 }

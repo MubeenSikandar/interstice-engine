@@ -724,8 +724,8 @@ impl SlackAdapter {
         
         blocks.into_iter().map(|block| {
             match block {
-                BlockElement::Section { text, fields, .. } => {
-                    let mut section = SlackSectionBlock::new().with_text(md!("{}", text));
+                BlockElement::Section { text,  .. } => {
+                    let section = SlackSectionBlock::new().with_text(md!("{}", text));
                     // Note: SlackSectionBlockFieldElement not available in current slack_morphism version
                     // Fields functionality would need to be implemented differently
                     SlackBlock::Section(section)

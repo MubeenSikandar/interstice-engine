@@ -7,10 +7,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result as AnyhowResult};
+use anyhow::Result as AnyhowResult;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
 
 // Re-export all public modules

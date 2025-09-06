@@ -19,17 +19,6 @@ use tower::ServiceBuilder;
 pub use cors::cors_layer;
 
 // Re-export auth middleware and helpers
-pub use auth::{
-    auth_middleware,
-    require_scope,
-    require_role,
-    require_workspace,
-    AuthContext,
-    generate_jwt_token,
-    generate_api_key,
-    revoke_api_key,
-    TokenType,
-};
 
 /// Create a comprehensive middleware stack for protected routes
 pub fn protected_routes_middleware() -> ServiceBuilder<
