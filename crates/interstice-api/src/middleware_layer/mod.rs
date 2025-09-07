@@ -4,6 +4,7 @@ pub mod auth;
 pub mod cors;
 pub mod rate_limit;
 pub mod webhook_auth;
+pub mod analytics;
 
 use axum::{
     extract::Request,
@@ -17,6 +18,7 @@ use tower::ServiceBuilder;
 
 // Re-export middleware functions
 pub use cors::cors_layer;
+pub use analytics::analytics_tracking;
 
 // Re-export auth middleware and helpers
 

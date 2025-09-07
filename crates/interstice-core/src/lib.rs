@@ -34,7 +34,7 @@ pub use storage::{ProgressPoint, StorageBackend, WorkspaceStats};
 pub use traits::{MLPredictor, OutcomePrediction};
 pub use types::{Platform, UserId, WorkspaceId};
 
-use crate::{analytics::{MetricEvent, MetricQuery}, outcome::{OutcomeFilters, OutcomeId}, storage::{ArtifactFilters, CleanupStats}, types::SystemEvent};
+use crate::{analytics::{MetricEvent, MetricQuery}, outcome::{OutcomeFilters, OutcomeId}, storage::{ArtifactFilters, CleanupStats}, types::{MetricValue, SystemEvent}};
 
 // Version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -188,6 +188,12 @@ pub struct IntersticeEngine {
     
     /// Metrics collector
     metrics: Arc<Metrics>,
+
+    /// Analytics engine for metrics and insights
+    analytics: Option<Arc<analytics::AnalyticsEngine>>,
+    
+    /// Analytics configuration
+    analytics_config: analytics::AnalyticsConfig,
 }
 
 impl IntersticeEngine {
@@ -211,6 +217,8 @@ impl IntersticeEngine {
             storage: None,
             ml_predictor: None,
             metrics,
+            analytics: None,
+            analytics_config: analytics::AnalyticsConfig::default(),
         }
     }
     
@@ -240,6 +248,18 @@ impl IntersticeEngine {
         self
     }
     
+    /// Configure analytics with a pre-built engine
+    pub fn with_analytics(mut self, analytics: Arc<analytics::AnalyticsEngine>) -> Self {
+        self.analytics = Some(analytics);
+        self
+    }
+    
+    /// Configure analytics with custom config (lazy initialization)
+    pub fn with_analytics_config(mut self, config: analytics::AnalyticsConfig) -> Self {
+        self.analytics_config = config;
+        self
+    }
+    
     /// Get the current configuration
     pub fn config(&self) -> &EngineConfig {
         &self.config
@@ -251,15 +271,26 @@ impl IntersticeEngine {
     }
     
     /// Process raw content and extract artifacts
-    #[instrument(skip(self, content), fields(platform = %platform))]
+    #[instrument(skip(self, content), fields(platform = %platform, workspace_id = %workspace_id))]
     pub async fn process(
         &self,
         content: String,
         platform: Platform,
+        workspace_id: WorkspaceId,
     ) -> Result<ProcessedData> {
         let start = std::time::Instant::now();
         self.metrics.increment_processing_attempts();
-        
+
+        // Record processing start
+         if let Some(analytics) = &self.analytics {
+        let event = analytics::create_metric_event(
+            "artifact.processing.started",
+            workspace_id.clone(),
+            MetricValue::Integer(1),
+        );
+        let _ = analytics.record_metric(event).await;
+    }
+
         // Validate content size
         if content.len() > self.config.max_content_size {
             self.metrics.increment_processing_errors();
@@ -280,6 +311,16 @@ impl IntersticeEngine {
         .map_err(|e| CoreError::Internal(e.to_string()))?;
         
         debug!("Extracted {} artifacts from {} content", artifacts.len(), platform);
+
+         if let Some(analytics) = &self.analytics {
+        let event = analytics::create_tagged_metric(
+            "artifact.extracted",
+            workspace_id.clone(),
+            MetricValue::Integer(artifacts.len() as i64),
+            vec![format!("platform:{}", platform)],
+        );
+        let _ = analytics.record_metric(event).await;
+    }
         
         // Process artifacts in parallel with concurrency limit
         let mut processing_results = Vec::new();
@@ -321,6 +362,48 @@ impl IntersticeEngine {
         } else {
             Vec::new()
         };
+
+        if !predictions.is_empty() {
+            if let Some(analytics) = &self.analytics {
+                let event = analytics::create_metric_event(
+                    "ml.predictions.generated",
+                    workspace_id.clone(),
+                    MetricValue::Integer(predictions.len() as i64),
+                );
+                let _ = analytics.record_metric(event).await;
+                
+                // Record confidence scores
+                for prediction in &predictions {
+                    let confidence_event = analytics::create_tagged_metric(
+                        "ml.prediction.confidence",
+                        workspace_id.clone(),
+                        MetricValue::Float(prediction.confidence as f64),
+                        vec![format!("outcome_name:{}", prediction.outcome_name)],
+                    );
+                    let _ = analytics.record_metric(confidence_event).await;
+                }
+            }
+        }
+        
+        // Record processing completion with duration
+        let elapsed = start.elapsed();
+        if let Some(analytics) = &self.analytics {
+            let event = analytics::create_metric_event(
+                "artifact.processing.duration",
+                workspace_id.clone(),
+                MetricValue::Duration(elapsed),
+            );
+            let _ = analytics.record_metric(event).await;
+            
+            // Record success/failure
+            let status_event = analytics::create_tagged_metric(
+                "artifact.processing.completed",
+                workspace_id.clone(),
+                MetricValue::Integer(1),
+                vec!["status:success".to_string()],
+            );
+            let _ = analytics.record_metric(status_event).await;
+        }
         
         // Map to outcomes if enabled
         let outcome_predictions = if self.config.enable_outcome_mapping && !artifacts.is_empty() {

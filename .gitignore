@@ -7,6 +7,7 @@ Cargo.lock
 # Environment
 .env
 .env.local
+*.md
 
 # IDE
 .idea/
@@ -14,6 +15,7 @@ Cargo.lock
 *.swp
 *.swo
 .DS_Store
+CLAUDE.md
 
 # Logs
 *.log

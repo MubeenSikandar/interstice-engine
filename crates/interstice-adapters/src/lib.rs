@@ -29,20 +29,20 @@ pub mod slack;
 #[cfg(feature = "slack")]
 pub use slack::SlackAdapter;
 
-#[cfg(feature = "github")]
-pub mod github;
-#[cfg(feature = "github")]
-pub use github::GitHubAdapter;
+// #[cfg(feature = "github")]
+// pub mod github;
+// #[cfg(feature = "github")]
+// pub use github::GitHubAdapter;
 
-#[cfg(feature = "teams")]
-pub mod teams;
-#[cfg(feature = "teams")]
-pub use teams::TeamsAdapter;
+// #[cfg(feature = "teams")]
+// pub mod teams;
+// #[cfg(feature = "teams")]
+// pub use teams::TeamsAdapter;
 
-#[cfg(feature = "jira")]
-pub mod jira;
-#[cfg(feature = "jira")]
-pub use jira::JiraAdapter;
+// #[cfg(feature = "jira")]
+// pub mod jira;
+// #[cfg(feature = "jira")]
+// pub use jira::JiraAdapter;
 
 // Re-export core traits
 pub use traits::{
@@ -837,23 +837,38 @@ impl EventSubscription {
 #[derive(Debug, Clone, Serialize)]
 pub enum ManagerEvent {
     /// Adapter registered
-    AdapterRegistered { platform: Platform },
+    AdapterRegistered { 
+        /// Platform
+        platform: Platform 
+    },
     
     /// Adapter unregistered
-    AdapterUnregistered { platform: Platform },
+    AdapterUnregistered { 
+        /// Platform
+        platform: Platform 
+    },
     
     /// Health status changed
     HealthStatusChanged {
+        /// Platform
         platform: Platform,
+        /// Old status
         old_status: HealthState,
+        /// New status
         new_status: HealthState,
     },
     
     /// Circuit breaker opened
-    CircuitBreakerOpened { platform: Platform },
+    CircuitBreakerOpened { 
+        /// Platform
+        platform: Platform 
+    },
     
     /// Circuit breaker closed
-    CircuitBreakerClosed { platform: Platform },
+    CircuitBreakerClosed { 
+        /// Platform
+        platform: Platform 
+    },
     
     /// Rate limit exceeded
     RateLimitExceeded,

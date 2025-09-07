@@ -268,6 +268,15 @@ pub enum ClusterType {
     Community,
 }
 
+#[derive(Debug, Clone)]
+struct CausalPattern {
+    nodes: Vec<String>,
+    edges: Vec<(String, String, RelationshipType)>,
+    support: f64,
+    confidence: f64,
+    instances: usize,
+}
+
 /// Relationship cache for performance
 struct RelationshipCache {
     /// Cached paths between nodes
@@ -685,7 +694,7 @@ impl EvidenceGraph {
         
         let mut communities = Vec::new();
         
-        for (idx, component) in sccs.iter().enumerate() {
+        for (_idx, component) in sccs.iter().enumerate() {
             if component.len() < 2 {
                 continue; // Skip single-node communities
             }
@@ -847,20 +856,640 @@ impl EvidenceGraph {
         graph: &DiGraph<Node, Edge>,
         min_support: f64,
     ) -> Vec<FrequentSubgraph> {
-        // Simplified frequent subgraph mining
-        // In production, use gSpan or similar algorithm
-        Vec::new()
+        let total_nodes = graph.node_count();
+        if total_nodes == 0 {
+            return Vec::new();
+        }
+        
+        let mut frequent_subgraphs = Vec::new();
+        let min_instances = (total_nodes as f64 * min_support).ceil() as usize;
+        
+        // Find single-edge patterns first
+        let mut edge_patterns: HashMap<(NodeType, RelationshipType, NodeType), Vec<(NodeIndex, NodeIndex)>> = HashMap::new();
+        
+        for edge_idx in graph.edge_indices() {
+            if let Some((source, target)) = graph.edge_endpoints(edge_idx) {
+                let source_type = graph[source].node_type();
+                let target_type = graph[target].node_type();
+                let relationship = graph[edge_idx].relationship;
+                
+                let pattern_key = (source_type, relationship, target_type);
+                edge_patterns.entry(pattern_key)
+                    .or_insert_with(Vec::new)
+                    .push((source, target));
+            }
+        }
+        
+        // Convert frequent edge patterns to subgraphs
+        for ((source_type, relationship, target_type), instances) in edge_patterns {
+            if instances.len() >= min_instances {
+                let support = instances.len() as f64 / total_nodes as f64;
+                let confidence = instances.iter()
+                    .map(|(s, t)| {
+                        graph.edges_connecting(*s, *t)
+                            .next()
+                            .map(|e| e.weight().confidence)
+                            .unwrap_or(0.0)
+                    })
+                    .sum::<f64>() / instances.len() as f64;
+                
+                // Create node IDs for the pattern
+                let nodes = vec![
+                    format!("{:?}_source", source_type),
+                    format!("{:?}_target", target_type),
+                ];
+                
+                let edges = vec![(
+                    nodes[0].clone(),
+                    nodes[1].clone(),
+                    relationship,
+                )];
+                
+                frequent_subgraphs.push(FrequentSubgraph {
+                    nodes,
+                    edges,
+                    support,
+                    confidence,
+                    instances: instances.len(),
+                });
+            }
+        }
+        
+        // Find two-edge patterns (triangles and chains)
+        if frequent_subgraphs.len() > 1 {
+            let mut two_edge_patterns: HashMap<String, Vec<Vec<NodeIndex>>> = HashMap::new();
+            
+            for node in graph.node_indices() {
+                // Find triangles
+                let outgoing: Vec<NodeIndex> = graph.neighbors_directed(node, Direction::Outgoing).collect();
+                
+                for i in 0..outgoing.len() {
+                    for j in i + 1..outgoing.len() {
+                        if graph.contains_edge(outgoing[i], outgoing[j]) || 
+                           graph.contains_edge(outgoing[j], outgoing[i]) {
+                            // Found a triangle
+                            let pattern_key = format!("triangle_{:?}", graph[node].node_type());
+                            two_edge_patterns.entry(pattern_key)
+                                .or_insert_with(Vec::new)
+                                .push(vec![node, outgoing[i], outgoing[j]]);
+                        }
+                    }
+                    
+                    // Find chains (A -> B -> C)
+                    let second_level: Vec<NodeIndex> = graph
+                        .neighbors_directed(outgoing[i], Direction::Outgoing)
+                        .filter(|&n| n != node)
+                        .collect();
+                    
+                    for target in second_level {
+                        let pattern_key = format!(
+                            "chain_{:?}_{:?}_{:?}",
+                            graph[node].node_type(),
+                            graph[outgoing[i]].node_type(),
+                            graph[target].node_type()
+                        );
+                        two_edge_patterns.entry(pattern_key)
+                            .or_insert_with(Vec::new)
+                            .push(vec![node, outgoing[i], target]);
+                    }
+                }
+            }
+            
+            // Convert to frequent subgraphs
+            for (_pattern_name, instances) in two_edge_patterns {
+                if instances.len() >= min_instances {
+                    let support = instances.len() as f64 / total_nodes as f64;
+                    
+                    // Calculate average confidence
+                    let mut total_confidence = 0.0;
+                    let mut edge_count = 0;
+                    
+                    for instance in &instances {
+                        for i in 0..instance.len() - 1 {
+                            if let Some(edge) = graph.find_edge(instance[i], instance[i + 1]) {
+                                total_confidence += graph[edge].confidence;
+                                edge_count += 1;
+                            }
+                        }
+                    }
+                    
+                    let confidence = if edge_count > 0 {
+                        total_confidence / edge_count as f64
+                    } else {
+                        0.0
+                    };
+                    
+                    // Create a representative pattern
+                    let nodes: Vec<String> = instances[0].iter()
+                        .map(|&idx| graph[idx].id())
+                        .collect();
+                    
+                    let mut edges = Vec::new();
+                    for i in 0..nodes.len() - 1 {
+                        if let Some(edge) = graph.find_edge(instances[0][i], instances[0][i + 1]) {
+                            edges.push((
+                                nodes[i].clone(),
+                                nodes[i + 1].clone(),
+                                graph[edge].relationship,
+                            ));
+                        }
+                    }
+                    
+                    frequent_subgraphs.push(FrequentSubgraph {
+                        nodes,
+                        edges,
+                        support,
+                        confidence,
+                        instances: instances.len(),
+                    });
+                }
+            }
+        }
+        
+        // Sort by support
+        frequent_subgraphs.sort_by(|a, b| b.support.partial_cmp(&a.support).unwrap());
+        frequent_subgraphs
     }
     
     async fn find_causal_patterns(
         &self,
         graph: &DiGraph<Node, Edge>,
     ) -> GraphResult<Vec<Pattern>> {
-        // Simplified causal pattern detection
-        // In production, use PC algorithm or similar
-        Ok(Vec::new())
+        let mut patterns = Vec::new();
+        
+        // Find temporal causal chains
+        let temporal_chains = self.find_temporal_chains(graph)?;
+        for chain in temporal_chains {
+            patterns.push(Pattern {
+                pattern_type: PatternType::CausalChain,
+                nodes: chain.nodes,
+                edges: chain.edges,
+                support: chain.support,
+                confidence: chain.confidence,
+                instances: chain.instances,
+            });
+        }
+        
+        // Find workflow sequences
+        let workflow_sequences = self.find_workflow_sequences(graph)?;
+        for sequence in workflow_sequences {
+            patterns.push(Pattern {
+                pattern_type: PatternType::WorkflowSequence,
+                nodes: sequence.nodes,
+                edges: sequence.edges,
+                support: sequence.support,
+                confidence: sequence.confidence,
+                instances: sequence.instances,
+            });
+        }
+        
+        // Find dependency trees
+        let dependency_trees = self.find_dependency_trees(graph)?;
+        for tree in dependency_trees {
+            patterns.push(Pattern {
+                pattern_type: PatternType::DependencyTree,
+                nodes: tree.nodes,
+                edges: tree.edges,
+                support: tree.support,
+                confidence: tree.confidence,
+                instances: tree.instances,
+            });
+        }
+        
+        Ok(patterns)
     }
     
+     fn find_temporal_chains(&self, graph: &DiGraph<Node, Edge>) -> GraphResult<Vec<CausalPattern>> {
+        let mut chains = Vec::new();
+        
+        // Find nodes ordered by creation time
+        let mut temporal_nodes: Vec<(NodeIndex, DateTime<Utc>)> = Vec::new();
+        
+        for node_idx in graph.node_indices() {
+            let timestamp = match &graph[node_idx] {
+                Node::Artifact { created_at, .. } => *created_at,
+                Node::Outcome { created_at, .. } => *created_at,
+                _ => continue,
+            };
+            temporal_nodes.push((node_idx, timestamp));
+        }
+        
+        temporal_nodes.sort_by_key(|(_, time)| *time);
+        
+        // Look for chains where earlier nodes influence later ones
+        for i in 0..temporal_nodes.len() {
+            let (start_idx, start_time) = temporal_nodes[i];
+            let mut chain = vec![start_idx];
+            let mut chain_edges = Vec::new();
+            
+            for j in i + 1..temporal_nodes.len().min(i + 10) {
+                let (next_idx, next_time) = temporal_nodes[j];
+                
+                // Check if there's a path and temporal ordering is maintained
+                if next_time > start_time {
+                    if let Some(edge) = graph.find_edge(chain.last().copied().unwrap(), next_idx) {
+                        let edge_data = &graph[edge];
+                        
+                        // Check for causal relationship indicators
+                        if edge_data.relationship == RelationshipType::Causes ||
+                           edge_data.relationship == RelationshipType::Enables ||
+                           (edge_data.relationship == RelationshipType::ContributesTo && edge_data.confidence > 0.7) {
+                            
+                            chain_edges.push((
+                                graph[*chain.last().unwrap()].id(),
+                                graph[next_idx].id(),
+                                edge_data.relationship,
+                            ));
+                            chain.push(next_idx);
+                        }
+                    }
+                }
+            }
+            
+            // If we found a chain of at least 3 nodes
+            if chain.len() >= 3 {
+                let nodes: Vec<String> = chain.iter().map(|&idx| graph[idx].id()).collect();
+                
+                let confidence = chain_edges.iter()
+                    .filter_map(|(from, to, _)| {
+                        self.find_edge_by_node_ids(graph, from, to)
+                            .map(|edge| graph[edge].confidence)
+                    })
+                    .sum::<f64>() / chain_edges.len().max(1) as f64;
+                
+                chains.push(CausalPattern {
+                    nodes,
+                    edges: chain_edges,
+                    support: 1.0 / temporal_nodes.len() as f64,
+                    confidence,
+                    instances: 1,
+                });
+            }
+        }
+        
+        Ok(chains)
+    }
+
+        
+        /// Find workflow sequences
+        fn find_workflow_sequences(&self, graph: &DiGraph<Node, Edge>) -> GraphResult<Vec<CausalPattern>> {
+            let mut sequences = Vec::new();
+            
+            // Look for artifact -> outcome -> artifact patterns
+            for node_idx in graph.node_indices() {
+                if let Node::Outcome { .. } = &graph[node_idx] {
+                    // Find incoming artifacts
+                    let incoming_artifacts: Vec<NodeIndex> = graph
+                        .neighbors_directed(node_idx, Direction::Incoming)
+                        .filter(|&n| matches!(graph[n], Node::Artifact { .. }))
+                        .collect();
+                    
+                    // Find outgoing relationships that lead to other artifacts
+                    let outgoing_paths: Vec<NodeIndex> = graph
+                        .neighbors_directed(node_idx, Direction::Outgoing)
+                        .filter(|&n| matches!(graph[n], Node::Artifact { .. }))
+                        .collect();
+                    
+                    if !incoming_artifacts.is_empty() && !outgoing_paths.is_empty() {
+                        for &input in &incoming_artifacts {
+                            for &output in &outgoing_paths {
+                                let nodes = vec![
+                                    graph[input].id(),
+                                    graph[node_idx].id(),
+                                    graph[output].id(),
+                                ];
+                                
+                                let edges = vec![
+                                    (nodes[0].clone(), nodes[1].clone(), RelationshipType::ContributesTo),
+                                    (nodes[1].clone(), nodes[2].clone(), RelationshipType::Enables),
+                                ];
+                                
+                                sequences.push(CausalPattern {
+                                    nodes,
+                                    edges,
+                                    support: 0.1,
+                                    confidence: 0.7,
+                                    instances: 1,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            
+            Ok(sequences)
+        }
+
+        /// Find dependency trees
+    fn find_dependency_trees(&self, graph: &DiGraph<Node, Edge>) -> GraphResult<Vec<CausalPattern>> {
+        let mut trees = Vec::new();
+        
+        // Find nodes with multiple dependencies
+        for root_idx in graph.node_indices() {
+            let dependencies: Vec<NodeIndex> = graph
+                .neighbors_directed(root_idx, Direction::Incoming)
+                .filter(|&n| {
+                    if let Some(edge) = graph.find_edge(n, root_idx) {
+                        graph[edge].relationship == RelationshipType::DependsOn
+                    } else {
+                        false
+                    }
+                })
+                .collect();
+            
+            if dependencies.len() >= 2 {
+                let mut nodes = vec![graph[root_idx].id()];
+                let mut edges = Vec::new();
+                
+                for &dep_idx in &dependencies {
+                    nodes.push(graph[dep_idx].id());
+                    edges.push((
+                        graph[dep_idx].id(),
+                        graph[root_idx].id(),
+                        RelationshipType::DependsOn,
+                    ));
+                }
+                
+                trees.push(CausalPattern {
+                    nodes,
+                    edges,
+                    support: dependencies.len() as f64 / graph.node_count() as f64,
+                    confidence: 0.8,
+                    instances: 1,
+                });
+            }
+        }
+        
+        Ok(trees)
+    }
+    
+    /// Helper to find edge by node IDs
+    fn find_edge_by_node_ids(&self, graph: &DiGraph<Node, Edge>, from_id: &str, to_id: &str) -> Option<petgraph::graph::EdgeIndex> {
+        for edge_idx in graph.edge_indices() {
+            if let Some((source, target)) = graph.edge_endpoints(edge_idx) {
+                if graph[source].id() == from_id && graph[target].id() == to_id {
+                    return Some(edge_idx);
+                }
+            }
+        }
+        None
+    }
+
+    fn export_gexf(&self, graph: &DiGraph<Node, Edge>) -> GraphResult<Vec<u8>> {
+        let mut xml = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>
+<gexf xmlns="http://www.gexf.net/1.2draft" version="1.2">
+    <meta lastmodifieddate=""#);
+        xml.push_str(&Utc::now().format("%Y-%m-%d").to_string());
+        xml.push_str(r#"">
+        <creator>INTERSTICE-ENGINE</creator>
+        <description>Evidence Graph Export</description>
+    </meta>
+    <graph mode="static" defaultedgetype="directed">
+        <attributes class="node">
+            <attribute id="0" title="type" type="string"/>
+            <attribute id="1" title="workspace_id" type="string"/>
+            <attribute id="2" title="created_at" type="string"/>
+        </attributes>
+        <attributes class="edge">
+            <attribute id="0" title="relationship" type="string"/>
+            <attribute id="1" title="confidence" type="float"/>
+            <attribute id="2" title="temporal_weight" type="float"/>
+        </attributes>
+        <nodes>
+"#);
+        
+        // Add nodes
+        for (idx, node_idx) in graph.node_indices().enumerate() {
+            let node = &graph[node_idx];
+            let node_id = node.id();
+            let node_type = format!("{:?}", node.node_type());
+            
+            let (workspace_id, created_at) = match node {
+                Node::Artifact { workspace_id, created_at, .. } => 
+                    (workspace_id.to_string(), created_at.to_rfc3339()),
+                Node::Outcome { workspace_id, created_at, .. } => 
+                    (workspace_id.to_string(), created_at.to_rfc3339()),
+                Node::User { workspace_id, .. } => 
+                    (workspace_id.to_string(), Utc::now().to_rfc3339()),
+                Node::Cluster { .. } => 
+                    (String::new(), Utc::now().to_rfc3339()),
+            };
+            
+            xml.push_str(&format!(
+                r#"            <node id="{}" label="{}">
+                <attvalues>
+                    <attvalue for="0" value="{}"/>
+                    <attvalue for="1" value="{}"/>
+                    <attvalue for="2" value="{}"/>
+                </attvalues>
+            </node>
+"#,
+                idx, node_id, node_type, workspace_id, created_at
+            ));
+        }
+        
+        xml.push_str("        </nodes>\n        <edges>\n");
+        
+        // Add edges
+        for (idx, edge_idx) in graph.edge_indices().enumerate() {
+            if let Some((source, target)) = graph.edge_endpoints(edge_idx) {
+                let edge = &graph[edge_idx];
+                xml.push_str(&format!(
+                    r#"            <edge id="{}" source="{}" target="{}" weight="{}">
+                <attvalues>
+                    <attvalue for="0" value="{:?}"/>
+                    <attvalue for="1" value="{}"/>
+                    <attvalue for="2" value="{}"/>
+                </attvalues>
+            </edge>
+"#,
+                    idx,
+                    source.index(),
+                    target.index(),
+                    edge.confidence,
+                    edge.relationship,
+                    edge.confidence,
+                    edge.temporal_weight
+                ));
+            }
+        }
+        
+        xml.push_str("        </edges>\n    </graph>\n</gexf>");
+        Ok(xml.into_bytes())
+    }
+
+
+    fn import_graphml(&self, data: &[u8]) -> GraphResult<(DiGraph<Node, Edge>, HashMap<String, NodeIndex>)> {
+        use quick_xml::events::Event;
+        use quick_xml::Reader;
+        
+        let mut reader = Reader::from_reader(data);
+        let mut graph = DiGraph::new();
+        let mut indices = HashMap::new();
+        let mut node_map = HashMap::new();
+        
+        let mut buf = Vec::<u8>::new();
+        let current_element = String::new();
+        let mut current_node_id = String::new();
+        let mut current_edge = Option::<(String, String, f64)>::None;
+        
+        loop {
+            match reader.read_event() {
+                Ok(Event::Start(ref e)) => {
+                    let element = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    
+                    if element == "node" {
+                        for attr in e.attributes() {
+                            if let Ok(attr) = attr {
+                                if attr.key.as_ref() == b"id" {
+                                    current_node_id = String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                            }
+                        }
+                    } else if current_element == "edge" {
+                        let mut source = String::new();
+                        let mut target = String::new();
+                        let mut weight = 1.0;
+                        
+                        for attr in e.attributes() {
+                            if let Ok(attr) = attr {
+                                match attr.key.as_ref() {
+                                    b"source" => source = String::from_utf8_lossy(&attr.value).to_string(),
+                                    b"target" => target = String::from_utf8_lossy(&attr.value).to_string(),
+                                    b"weight" => {
+                                        if let Ok(w) = String::from_utf8_lossy(&attr.value).parse() {
+                                            weight = w;
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        
+                        current_edge = Some((source, target, weight));
+                    }
+                }
+                Ok(Event::End(ref e)) => {
+                    let element = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    
+                    if element == "node" && !current_node_id.is_empty() {
+                        // Create a default artifact node
+                        let node = Node::Artifact {
+                            id: Uuid::new_v4(),
+                            workspace_id: WorkspaceId::new(),
+                            platform: Platform::Slack,
+                            artifact_type: "imported".to_string(),
+                            created_at: Utc::now(),
+                            metadata: HashMap::new(),
+                        };
+                        
+                        let idx = graph.add_node(node);
+                        node_map.insert(current_node_id.clone(), idx);
+                        indices.insert(format!("artifact:{}", current_node_id), idx);
+                        current_node_id.clear();
+                    } else if element == "edge" {
+                        if let Some((source, target, weight)) = current_edge.take() {
+                            if let (Some(&source_idx), Some(&target_idx)) = 
+                                (node_map.get(&source), node_map.get(&target)) {
+                                let edge = Edge::new(RelationshipType::RelatesTo, weight);
+                                graph.add_edge(source_idx, target_idx, edge);
+                            }
+                        }
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(GraphError::OperationFailed(format!("XML parse error: {}", e))),
+                _ => {}
+            }
+            buf.clear();
+        }
+        
+        Ok((graph, indices))
+    }
+    
+    /// Import graph from JSON format
+    fn import_json(&self, data: &[u8]) -> GraphResult<(DiGraph<Node, Edge>, HashMap<String, NodeIndex>)> {
+        #[derive(Deserialize)]
+        struct GraphJson {
+            nodes: Vec<serde_json::Value>,
+            edges: Vec<EdgeJson>,
+        }
+        
+        #[derive(Deserialize)]
+        struct EdgeJson {
+            source: String,
+            target: String,
+            #[serde(default = "default_confidence")]
+            confidence: f64,
+            #[serde(default = "default_relationship")]
+            relationship: String,
+        }
+        
+        fn default_confidence() -> f64 { 1.0 }
+        fn default_relationship() -> String { "RelatesTo".to_string() }
+        
+        let graph_data: GraphJson = serde_json::from_slice(data)
+            .map_err(|e| GraphError::OperationFailed(format!("JSON parse error: {}", e)))?;
+        
+        let mut graph = DiGraph::new();
+        let mut indices = HashMap::new();
+        let mut node_id_to_idx = HashMap::new();
+        
+        // Add nodes
+        for node_value in graph_data.nodes {
+            // Try to deserialize as a proper Node
+            let node = if let Ok(node) = serde_json::from_value::<Node>(node_value.clone()) {
+                node
+            } else {
+                // Fallback to creating a default node
+                let _id = node_value.get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                
+                Node::Artifact {
+                    id: Uuid::new_v4(),
+                    workspace_id: WorkspaceId::new(),
+                    platform: Platform::Slack,
+                    artifact_type: "imported".to_string(),
+                    created_at: Utc::now(),
+                    metadata: HashMap::new(),
+                }
+            };
+            
+            let node_id = node.id();
+            let idx = graph.add_node(node);
+            indices.insert(node_id.clone(), idx);
+            node_id_to_idx.insert(node_id, idx);
+        }
+        
+        // Add edges
+        for edge_data in graph_data.edges {
+            if let (Some(&source_idx), Some(&target_idx)) = 
+                (node_id_to_idx.get(&edge_data.source), node_id_to_idx.get(&edge_data.target)) {
+                
+                let relationship = match edge_data.relationship.as_str() {
+                    "ContributesTo" => RelationshipType::ContributesTo,
+                    "DependsOn" => RelationshipType::DependsOn,
+                    "CreatedBy" => RelationshipType::CreatedBy,
+                    "OwnedBy" => RelationshipType::OwnedBy,
+                    "Blocks" => RelationshipType::Blocks,
+                    "Enables" => RelationshipType::Enables,
+                    "MemberOf" => RelationshipType::MemberOf,
+                    "Causes" => RelationshipType::Causes,
+                    "CorrelatesWith" => RelationshipType::CorrelatesWith,
+                    _ => RelationshipType::RelatesTo,
+                };
+                
+                let edge = Edge::new(relationship, edge_data.confidence);
+                graph.add_edge(source_idx, target_idx, edge);
+            }
+        }
+        
+        Ok((graph, indices))
+    }
+   
+
     fn calculate_centrality_scores(
         &self,
         graph: &DiGraph<Node, Edge>,
@@ -1185,7 +1814,7 @@ impl EvidenceGraph {
     
     async fn find_critical_paths(
         &self,
-        graph: &DiGraph<Node, Edge>,
+        _graph: &DiGraph<Node, Edge>,
         indices: &HashMap<String, NodeIndex>,
     ) -> GraphResult<Vec<PathInfo>> {
         let mut critical_paths = Vec::new();
@@ -1233,7 +1862,7 @@ impl EvidenceGraph {
         graph: &DiGraph<Node, Edge>,
         top_influencers: &[(String, f64)],
         communities: &[Community],
-        patterns: &[Pattern],
+        _patterns: &[Pattern],
     ) -> GraphResult<Vec<Recommendation>> {
         let mut recommendations = Vec::new();
         
@@ -1400,21 +2029,6 @@ impl EvidenceGraph {
         
         dot.push_str("}");
         Ok(dot.into_bytes())
-    }
-    
-    fn export_gexf(&self, graph: &DiGraph<Node, Edge>) -> GraphResult<Vec<u8>> {
-        // Simplified GEXF export
-        Ok(Vec::new())
-    }
-    
-    fn import_graphml(&self, data: &[u8]) -> GraphResult<(DiGraph<Node, Edge>, HashMap<String, NodeIndex>)> {
-        // Simplified GraphML import
-        Err(GraphError::OperationFailed("GraphML import not yet implemented".to_string()))
-    }
-    
-    fn import_json(&self, data: &[u8]) -> GraphResult<(DiGraph<Node, Edge>, HashMap<String, NodeIndex>)> {
-        // Simplified JSON import
-        Err(GraphError::OperationFailed("JSON import not yet implemented".to_string()))
     }
 }
 

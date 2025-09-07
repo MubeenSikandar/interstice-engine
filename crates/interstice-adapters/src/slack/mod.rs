@@ -41,49 +41,71 @@ use crate::traits::{
 #[derive(Error, Debug)]
 pub enum SlackError {
     #[error("Slack API error: {0}")]
+    /// API error
     ApiError(String),
     
     #[error("Invalid event format: {0}")]
+    /// Invalid event format
     InvalidEvent(String),
     
     #[error("Signature verification failed")]
+    /// Signature verification failed
     SignatureVerificationFailed,
     
     #[error("OAuth error: {0}")]
+    /// OAuth error
     OAuthError(String),
     
     #[error("Channel not found: {0}")]
+    /// Channel not found
     ChannelNotFound(String),
     
     #[error("User not found: {0}")]
+    /// User not found
     UserNotFound(String),
     
     #[error("Permission denied: {0}")]
+    /// Permission denied
     PermissionDenied(String),
 }
 
 /// Slack adapter configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct SlackConfig {
+    /// Bot token
     pub bot_token: String,
+    /// Signing secret
     pub signing_secret: String,
+    /// App token
     pub app_token: Option<String>,
+    /// Client ID
     pub client_id: Option<String>,
+    /// Client secret
     pub client_secret: Option<String>,
+    /// Workspace ID
     pub workspace_id: WorkspaceId,
+    /// Enable socket mode
     pub enable_socket_mode: bool,
+    /// Enable events API
     pub enable_events_api: bool,
+    /// Retry configuration
     pub retry_config: RetryConfig,
+    /// Cache configuration
     pub cache_config: CacheConfig,
+    /// Feature flags
     pub feature_flags: SlackFeatures,
 }
 
 /// Retry configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct RetryConfig {
+    /// Max retries
     pub max_retries: u32,
+    /// Initial delay in milliseconds
     pub initial_delay_ms: u64,
+    /// Max delay in milliseconds
     pub max_delay_ms: u64,
+    /// Exponential base
     pub exponential_base: f64,
 }
 
@@ -101,8 +123,11 @@ impl Default for RetryConfig {
 /// Cache configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct CacheConfig {
+    /// Enabled
     pub enabled: bool,
+    /// TTL in seconds
     pub ttl_seconds: u64,
+    /// Max entries
     pub max_entries: usize,
 }
 
@@ -119,11 +144,17 @@ impl Default for CacheConfig {
 /// Slack feature flags
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SlackFeatures {
+    /// Auto thread responses
     pub auto_thread_responses: bool,
+    /// Smart mentions
     pub smart_mentions: bool,
+    /// Rich previews
     pub rich_previews: bool,
+    /// Analytics tracking
     pub analytics_tracking: bool,
+    /// AI suggestions
     pub ai_suggestions: bool,
+    /// Workflow automation
     pub workflow_automation: bool,
 }
 
@@ -381,7 +412,7 @@ impl SlackAdapter {
         
         // Process with engine
         let start = Instant::now();
-        let processed = self.engine.process(content, Platform::Slack).await?;
+        let processed = self.engine.process(content, Platform::Slack, self.config.workspace_id.clone()).await?;
         
         // Send response if artifacts found and features enabled
         if !processed.artifacts.is_empty() && self.config.feature_flags.auto_thread_responses {
@@ -425,7 +456,7 @@ impl SlackAdapter {
             "stats" => self.generate_stats_message().await?,
             _ => {
                 // Process as regular content
-                let processed = self.engine.process(content, Platform::Slack).await?;
+                let processed = self.engine.process(content, Platform::Slack, self.config.workspace_id.clone()).await?;
                 self.format_processing_response(&processed)
             }
         };

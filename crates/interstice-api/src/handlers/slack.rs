@@ -1080,7 +1080,7 @@ pub async fn handle_slash_commands(
         let command_clone = command.clone();
         tokio::spawn(async move {
             let full_response = process_complex_command(&command_clone, &state_clone).await;
-            post_to_response_url(&command_clone.response_url, &full_response).await;
+            let _ = post_to_response_url(&command_clone.response_url, &full_response).await;
         });
         
         return Ok(Json(ack_response));

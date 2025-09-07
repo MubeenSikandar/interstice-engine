@@ -36,6 +36,8 @@ pub struct AppState {
     pub ml_pipeline: Arc<MLPipeline>,
     /// Database connection pool
     pub db: PgPool,
+    /// Analytics engine for metrics and insights
+    pub analytics: Option<Arc<interstice_core::analytics::AnalyticsEngine>>,
 }
 
 impl AppState {
@@ -83,6 +85,13 @@ async fn main() {
     // Initialize core engine with ML predictor and storage
     let core = initialize_core_engine(ml_predictor, db.clone()).await;
 
+    // Initialize storage backend (share with core engine)
+    let storage_config = interstice_core::storage::StorageConfig::default();
+    let storage = Arc::new(PostgresStorage::new(storage_config).await.unwrap()) as Arc<dyn StorageBackend>;
+
+    // Initialize analytics engine
+    let analytics = initialize_analytics_engine(storage.clone()).await;
+
     // Initialize platform adapters
     let (adapters, slack_adapter) = initialize_adapters(
         &db,
@@ -96,6 +105,7 @@ async fn main() {
         slack_adapter,
         core,
         ml_pipeline,
+        analytics,  // Add this
         db: db.clone(),
     });
 
@@ -250,6 +260,68 @@ async fn initialize_core_engine(
     info!("Core engine initialized with ML predictor and storage");
     
     Arc::new(engine)
+}
+
+/// Initialize analytics engine
+async fn initialize_analytics_engine(
+    storage: Arc<dyn StorageBackend>,
+) -> Option<Arc<interstice_core::analytics::AnalyticsEngine>> {
+    use interstice_core::analytics::{AnalyticsConfig, AnalyticsEngine};
+    
+    // Check if analytics is enabled via environment variable
+    let analytics_enabled = std::env::var("ENABLE_ANALYTICS")
+        .unwrap_or_else(|_| "true".to_string())
+        .parse::<bool>()
+        .unwrap_or(true);
+    
+    if !analytics_enabled {
+        info!("Analytics disabled by configuration");
+        return None;
+    }
+    
+    // Configure analytics based on environment
+    let config = AnalyticsConfig {
+        buffer_size: std::env::var("ANALYTICS_BUFFER_SIZE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10_000),
+        flush_interval: Duration::from_secs(
+            std::env::var("ANALYTICS_FLUSH_INTERVAL_SECS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30)
+        ),
+        enable_anomaly_detection: std::env::var("ANALYTICS_ANOMALY_DETECTION")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(true),
+        retention_period: Duration::from_secs(
+            std::env::var("ANALYTICS_RETENTION_DAYS")
+                .ok()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(90) * 24 * 3600
+        ),
+        rate_limit: std::env::var("ANALYTICS_RATE_LIMIT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1000),
+        enable_compression: true,
+        sampling_rate: std::env::var("ANALYTICS_SAMPLING_RATE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1.0),
+    };
+    
+    match AnalyticsEngine::new(storage, config).await {
+        Ok(engine) => {
+            info!("Analytics engine initialized successfully");
+            Some(Arc::new(engine))
+        }
+        Err(e) => {
+            error!("Failed to initialize analytics engine: {}", e);
+            None
+        }
+    }
 }
 
 /// Initialize platform adapters
