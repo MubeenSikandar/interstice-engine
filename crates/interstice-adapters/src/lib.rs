@@ -819,7 +819,6 @@ impl EventBus {
         }
     }
 }
-
 /// Event subscription handle
 pub struct EventSubscription {
     id: Uuid,

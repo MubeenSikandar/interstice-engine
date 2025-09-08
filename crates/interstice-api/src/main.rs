@@ -1,10 +1,10 @@
 // interstice-api/src/main.rs
 use axum::{
-    middleware,
+    middleware::{self, from_fn_with_state},
     Router,
 };
 use interstice_adapters::{slack::SlackConfig, AdapterManager, PlatformAdapter, slack::SlackAdapter};
-use interstice_core::{storage::PostgresStorage, IntersticeEngine, MLPredictor, StorageBackend};
+use interstice_core::{analytics::AnalyticsEngine, storage::PostgresStorage, IntersticeEngine, MLPredictor, StorageBackend};
 use interstice_ml::{MLPipeline, adapters::MLPredictorAdapter};
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -25,6 +25,8 @@ use middleware_layer::{
     create_middleware_stack,
 };
 
+use crate::middleware_layer::analytics_tracking;
+
 pub struct AppState {
     /// Manages all platform adapters dynamically
     pub adapters: Arc<AdapterManager>,
@@ -37,7 +39,7 @@ pub struct AppState {
     /// Database connection pool
     pub db: PgPool,
     /// Analytics engine for metrics and insights
-    pub analytics: Option<Arc<interstice_core::analytics::AnalyticsEngine>>,
+    pub analytics: Option<Arc<AnalyticsEngine>>,
 }
 
 impl AppState {
@@ -78,6 +80,11 @@ async fn main() {
 
     // Run migrations
     run_migrations(&db).await;
+
+    if let Err(e) = handlers::slack::initialize_encryption_key() {
+        error!("Failed to initialize encryption key: {}", e);
+        std::process::exit(1);
+    }
 
     // Initialize ML components
     let (ml_pipeline, ml_predictor) = initialize_ml_components(&db).await;
@@ -330,7 +337,7 @@ async fn initialize_adapters(
     ml_pipeline: &Arc<MLPipeline>,
     _core: &Arc<IntersticeEngine>,
     ) -> (AdapterManager, Option<Arc<SlackAdapter>>) {
-    let mut adapters = AdapterManager::new();
+    let adapters = AdapterManager::new();
     let mut slack_adapter = None;
     
     // Initialize Slack adapter if configured
@@ -384,7 +391,9 @@ async fn initialize_adapters(
             .with_ml_pipeline(ml_pipeline.clone());
         
         slack_adapter = Some(Arc::new(adapter));
-        adapters.register(Arc::new(adapter2) as Arc<dyn PlatformAdapter>);
+        if let Err(e) = adapters.register(Arc::new(adapter2) as Arc<dyn PlatformAdapter>) {
+            error!("Failed to register Slack adapter: {}", e);
+        }
         info!("Slack adapter initialized with workspace {}", workspace_id);
     } else {
         warn!("Slack adapter not configured - missing SLACK_BOT_TOKEN or SLACK_SIGNING_SECRET");
@@ -414,6 +423,17 @@ fn start_background_tasks(state: Arc<AppState>) {
     let state_for_training = state.clone();
     let state_for_cleanup = state.clone();
     let state_for_monitoring = state.clone();
+
+    let oauth_cleanup_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(3600)); // Every hour
+        
+        loop {
+            interval.tick().await;
+            // Call the cleanup function from slack handler
+            handlers::slack::cleanup_expired_oauth_states(&oauth_cleanup_state).await;
+        }
+    });
     
     // Periodic ML model retraining
     tokio::spawn(async move {
@@ -530,6 +550,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         
         // Add the comprehensive middleware stack for compression, tracing, etc.
         .layer(create_middleware_stack())
+        .layer(from_fn_with_state(state.clone(), analytics_tracking))
         
         // Add CORS as the outermost layer so it applies first
         .layer(cors_layer())

@@ -469,8 +469,8 @@ impl SlackAdapter {
             )
             .with_thread_ts(event.origin.ts.clone());
             
-            let client = self.client.clone();
-            let bot_token = self.config.bot_token.clone();
+            let _client = self.client.clone();
+            let _bot_token = self.config.bot_token.clone();
             let _ = self.execute_with_retry(|| {
                 let client = self.client.clone();
                 let bot_token = self.config.bot_token.clone();
@@ -541,7 +541,7 @@ impl SlackAdapter {
     async fn send_artifact_summary(
         &self,
         channel: &SlackChannelId,
-        user: Option<&SlackUserId>,
+        _user: Option<&SlackUserId>,
         processed: &ProcessedData,
         thread_ts: Option<&SlackTs>,
     ) -> AnyhowResult<()> {
