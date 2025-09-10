@@ -1,32 +1,3 @@
--- Migration: 001_initial_schema
--- Description: Complete database schema initialization with ML training, webhooks, and workspace management
--- Version: 1.0.0
--- Date: 2025-01-01
--- Author: Database Team
-
--- ============================================================================
--- MIGRATION METADATA
--- ============================================================================
-
-DO $$
-BEGIN
-    -- Ensure migrations table exists
-    CREATE TABLE IF NOT EXISTS _sqlx_migrations (
-        version BIGINT PRIMARY KEY,
-        description TEXT NOT NULL,
-        installed_on TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        success BOOLEAN NOT NULL,
-        checksum BYTEA NOT NULL,
-        execution_time BIGINT NOT NULL
-    );
-    
-    -- Check if migration already applied
-    IF EXISTS (SELECT 1 FROM _sqlx_migrations WHERE version = 1) THEN
-        RAISE NOTICE 'Migration 001 already applied, skipping...';
-        RETURN;
-    END IF;
-END $$;
-
 -- ============================================================================
 -- BEGIN TRANSACTION
 -- ============================================================================
@@ -204,6 +175,7 @@ CREATE TABLE IF NOT EXISTS public.workspaces (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     slack_team_id VARCHAR(255) UNIQUE,
     name VARCHAR(255) NOT NULL,
+    description TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     slack_team_name VARCHAR(255),
@@ -236,6 +208,36 @@ CREATE TABLE IF NOT EXISTS public.artifacts (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     channel_id VARCHAR(255),
     message_id VARCHAR(255)
+);
+
+-- Artifact relations: Links between related artifacts
+CREATE TABLE IF NOT EXISTS public.artifact_relations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    artifact_id UUID REFERENCES public.artifacts(id) ON DELETE CASCADE,
+    related_artifact_id UUID REFERENCES public.artifacts(id) ON DELETE CASCADE,
+    relation_type VARCHAR(50) DEFAULT 'related',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(artifact_id, related_artifact_id)
+);
+
+-- Artifact tags: Tags associated with artifacts
+CREATE TABLE IF NOT EXISTS public.artifact_tags (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    artifact_id UUID REFERENCES public.artifacts(id) ON DELETE CASCADE,
+    tag VARCHAR(255) NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(artifact_id, tag)
+);
+
+-- Batch processing metrics: Track batch operation performance
+CREATE TABLE IF NOT EXISTS public.batch_processing_metrics (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    workspace_id UUID REFERENCES public.workspaces(id) ON DELETE CASCADE,
+    operation_type VARCHAR(100) NOT NULL,
+    total_items INTEGER NOT NULL,
+    successful_items INTEGER NOT NULL,
+    failed_items INTEGER NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- Outcomes: Goals, tasks, and deliverables
@@ -806,7 +808,6 @@ CREATE TABLE IF NOT EXISTS public.rate_limit_overrides (
 );
 
 -- Users
-
 CREATE TABLE IF NOT EXISTS public.users (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     email VARCHAR(255) UNIQUE NOT NULL,
@@ -1099,29 +1100,386 @@ ALTER TABLE public.training_examples ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.webhooks ENABLE ROW LEVEL SECURITY;
 
 -- ============================================================================
--- FINAL MIGRATION TRACKING
--- ============================================================================
-
--- Record successful migration
-INSERT INTO _sqlx_migrations (
-    version,
-    description,
-    success,
-    checksum,
-    execution_time
-) VALUES (
-    1,
-    'Initial complete database schema with ML training, webhooks, and workspace management',
-    TRUE,
-    E'\\x01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF01234567890ABCDEF',  -- Replace with actual checksum
-    EXTRACT(EPOCH FROM (clock_timestamp() - transaction_timestamp()) * 1000)::BIGINT
-);
-
--- ============================================================================
 -- COMMIT TRANSACTION
 -- ============================================================================
 
 COMMIT;
+
+-- ============================================================================
+-- COMPREHENSIVE AUTHENTICATION & USER MANAGEMENT SCHEMA
+-- ============================================================================
+
+-- Additional extensions for enhanced authentication
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- ============================================================================
+-- Enhanced Helper Functions
+-- ============================================================================
+
+-- Function to update the updated_at timestamp (already exists, but ensuring it's available)
+CREATE OR REPLACE FUNCTION update_updated_at_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- Enhanced Core Tables
+-- ============================================================================
+
+-- Enhanced workspaces table (extending existing)
+ALTER TABLE public.workspaces 
+ADD COLUMN IF NOT EXISTS slug VARCHAR(255) UNIQUE,
+ADD COLUMN IF NOT EXISTS owner_email VARCHAR(255),
+ADD COLUMN IF NOT EXISTS settings JSONB DEFAULT '{}',
+ADD COLUMN IF NOT EXISTS subscription_tier VARCHAR(50) DEFAULT 'free',
+ADD COLUMN IF NOT EXISTS subscription_expires_at TIMESTAMPTZ;
+
+-- Create index for slug if it doesn't exist
+CREATE INDEX IF NOT EXISTS idx_workspaces_slug ON public.workspaces(slug);
+CREATE INDEX IF NOT EXISTS idx_workspaces_owner_email ON public.workspaces(owner_email);
+
+-- Enhanced users table (extending existing)
+ALTER TABLE public.users 
+ADD COLUMN IF NOT EXISTS first_name VARCHAR(100),
+ADD COLUMN IF NOT EXISTS last_name VARCHAR(100),
+ADD COLUMN IF NOT EXISTS display_name VARCHAR(255),
+ADD COLUMN IF NOT EXISTS avatar_url TEXT,
+ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS verification_token VARCHAR(255),
+ADD COLUMN IF NOT EXISTS phone_number VARCHAR(50),
+ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS two_factor_secret VARCHAR(255),
+ADD COLUMN IF NOT EXISTS failed_login_attempts INTEGER DEFAULT 0,
+ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ,
+ADD COLUMN IF NOT EXISTS last_login_ip INET,
+ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ DEFAULT NOW(),
+ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}',
+ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+-- Add email validation constraint
+DO $$ BEGIN
+    ALTER TABLE public.users 
+    ADD CONSTRAINT valid_email CHECK (email ~* '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+-- Enhanced indexes for users table
+CREATE INDEX IF NOT EXISTS idx_users_email ON public.users(email) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_users_verification_token ON public.users(verification_token) WHERE verification_token IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_users_deleted_at ON public.users(deleted_at);
+
+-- Enhanced API Keys table (extending existing)
+ALTER TABLE public.api_keys 
+ADD COLUMN IF NOT EXISTS last_used_ip INET,
+ADD COLUMN IF NOT EXISTS revoked_by UUID REFERENCES public.users(id);
+
+-- Enhanced indexes for API keys
+CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON public.api_keys(key_hash) WHERE revoked = FALSE;
+CREATE INDEX IF NOT EXISTS idx_api_keys_expires_at ON public.api_keys(expires_at) WHERE revoked = FALSE AND expires_at IS NOT NULL;
+
+-- Refresh tokens table (new)
+CREATE TABLE IF NOT EXISTS public.refresh_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    token_hash VARCHAR(255) UNIQUE NOT NULL,
+    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    ip_address INET,
+    user_agent TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON public.refresh_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_expires_at ON public.refresh_tokens(expires_at);
+
+-- Enhanced revoked JWT tokens table (extending existing)
+ALTER TABLE public.revoked_tokens 
+ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES public.users(id) ON DELETE CASCADE;
+
+-- Password reset tokens table (new)
+CREATE TABLE IF NOT EXISTS public.password_reset_tokens (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    token_hash VARCHAR(255) UNIQUE NOT NULL,
+    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used BOOLEAN DEFAULT FALSE,
+    used_at TIMESTAMPTZ,
+    ip_address INET,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user_id ON public.password_reset_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_expires_at ON public.password_reset_tokens(expires_at) WHERE used = FALSE;
+
+-- Sessions table for session management (new)
+CREATE TABLE IF NOT EXISTS public.sessions (
+    session_id VARCHAR(255) PRIMARY KEY,
+    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES public.workspaces(id) ON DELETE CASCADE,
+    ip_address INET,
+    user_agent TEXT,
+    last_activity TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON public.sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON public.sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_activity ON public.sessions(last_activity);
+
+-- OAuth providers configuration (new)
+CREATE TABLE IF NOT EXISTS public.oauth_providers (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(50) UNIQUE NOT NULL,
+    client_id VARCHAR(255) NOT NULL,
+    client_secret_encrypted TEXT NOT NULL,
+    authorization_url TEXT NOT NULL,
+    token_url TEXT NOT NULL,
+    user_info_url TEXT,
+    scopes TEXT[],
+    enabled BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Enhanced OAuth states for CSRF protection (extending existing)
+ALTER TABLE public.oauth_states 
+ADD COLUMN IF NOT EXISTS provider VARCHAR(50),
+ADD COLUMN IF NOT EXISTS redirect_uri TEXT,
+ADD COLUMN IF NOT EXISTS code_challenge VARCHAR(255),
+ADD COLUMN IF NOT EXISTS code_challenge_method VARCHAR(10);
+
+-- OAuth accounts linked to users (new)
+CREATE TABLE IF NOT EXISTS public.oauth_accounts (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    provider VARCHAR(50) NOT NULL,
+    provider_user_id VARCHAR(255) NOT NULL,
+    access_token_encrypted TEXT,
+    refresh_token_encrypted TEXT,
+    token_expires_at TIMESTAMPTZ,
+    email VARCHAR(255),
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(provider, provider_user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_oauth_accounts_user_id ON public.oauth_accounts(user_id);
+CREATE INDEX IF NOT EXISTS idx_oauth_accounts_provider ON public.oauth_accounts(provider, provider_user_id);
+
+-- Enhanced API usage tracking table (extending existing)
+ALTER TABLE public.api_usage 
+ADD COLUMN IF NOT EXISTS ip_address INET,
+ADD COLUMN IF NOT EXISTS user_agent TEXT;
+
+-- Enhanced audit logs table (extending existing security_audit_log)
+CREATE TABLE IF NOT EXISTS public.audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_type VARCHAR(100) NOT NULL,
+    user_id UUID REFERENCES public.users(id) ON DELETE SET NULL,
+    workspace_id UUID REFERENCES public.workspaces(id) ON DELETE SET NULL,
+    target_type VARCHAR(100),
+    target_id VARCHAR(255),
+    ip_address INET,
+    user_agent TEXT,
+    details JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes for audit logs
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON public.audit_logs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_workspace_id ON public.audit_logs(workspace_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_event_type ON public.audit_logs(event_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON public.audit_logs(created_at DESC);
+
+-- User preferences table (new)
+CREATE TABLE IF NOT EXISTS public.user_preferences (
+    user_id UUID PRIMARY KEY REFERENCES public.users(id) ON DELETE CASCADE,
+    theme VARCHAR(20) DEFAULT 'light',
+    language VARCHAR(10) DEFAULT 'en',
+    timezone VARCHAR(50) DEFAULT 'UTC',
+    email_notifications BOOLEAN DEFAULT TRUE,
+    push_notifications BOOLEAN DEFAULT FALSE,
+    weekly_summary BOOLEAN DEFAULT TRUE,
+    marketing_emails BOOLEAN DEFAULT FALSE,
+    preferences JSONB DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Workspace invitations (new)
+CREATE TABLE IF NOT EXISTS public.workspace_invitations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id UUID NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
+    email VARCHAR(255) NOT NULL,
+    role VARCHAR(50) DEFAULT 'member',
+    invited_by UUID NOT NULL REFERENCES public.users(id),
+    invitation_token VARCHAR(255) UNIQUE NOT NULL,
+    accepted_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_invitations_token ON public.workspace_invitations(invitation_token) WHERE accepted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_workspace_invitations_workspace_id ON public.workspace_invitations(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_invitations_email ON public.workspace_invitations(email);
+
+-- Workspace members (many-to-many relationship) (new)
+CREATE TABLE IF NOT EXISTS public.workspace_members (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    workspace_id UUID NOT NULL REFERENCES public.workspaces(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    role VARCHAR(50) DEFAULT 'member',
+    permissions JSONB DEFAULT '{}',
+    joined_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(workspace_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_members_workspace_id ON public.workspace_members(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_members_user_id ON public.workspace_members(user_id);
+
+-- ============================================================================
+-- Enhanced Triggers
+-- ============================================================================
+
+-- Update triggers for updated_at columns
+DO $$ BEGIN
+    CREATE TRIGGER update_users_updated_at
+        BEFORE UPDATE ON public.users
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    CREATE TRIGGER update_workspaces_updated_at
+        BEFORE UPDATE ON public.workspaces
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    CREATE TRIGGER update_oauth_providers_updated_at
+        BEFORE UPDATE ON public.oauth_providers
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    CREATE TRIGGER update_oauth_accounts_updated_at
+        BEFORE UPDATE ON public.oauth_accounts
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+    CREATE TRIGGER update_user_preferences_updated_at
+        BEFORE UPDATE ON public.user_preferences
+        FOR EACH ROW
+        EXECUTE FUNCTION update_updated_at_column();
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
+
+-- ============================================================================
+-- Enhanced Cleanup Jobs
+-- ============================================================================
+
+-- Enhanced function to clean up expired tokens
+CREATE OR REPLACE FUNCTION cleanup_expired_tokens()
+RETURNS void AS $$
+BEGIN
+    -- Delete expired password reset tokens
+    DELETE FROM public.password_reset_tokens 
+    WHERE expires_at < NOW() AND used = FALSE;
+    
+    -- Delete expired OAuth states
+    DELETE FROM public.oauth_states 
+    WHERE expires_at < NOW();
+    
+    -- Delete expired refresh tokens
+    DELETE FROM public.refresh_tokens 
+    WHERE expires_at < NOW();
+    
+    -- Delete expired revoked tokens
+    DELETE FROM public.revoked_tokens 
+    WHERE expires_at < NOW();
+    
+    -- Delete expired sessions
+    DELETE FROM public.sessions 
+    WHERE expires_at < NOW() OR last_activity < NOW() - INTERVAL '30 days';
+    
+    -- Delete expired workspace invitations
+    DELETE FROM public.workspace_invitations 
+    WHERE expires_at < NOW() AND accepted_at IS NULL;
+    
+    -- Call existing cleanup function
+    PERFORM public.cleanup_expired_tokens();
+END;
+$$ LANGUAGE plpgsql;
+
+-- ============================================================================
+-- Enhanced Row Level Security (RLS) Policies
+-- ============================================================================
+
+-- Enable RLS on additional sensitive tables
+ALTER TABLE public.refresh_tokens ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.password_reset_tokens ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.oauth_accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.workspace_invitations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.workspace_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_preferences ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- Initial Data
+-- ============================================================================
+
+-- Insert default OAuth providers (disabled by default, need configuration)
+INSERT INTO public.oauth_providers (name, client_id, client_secret_encrypted, authorization_url, token_url, user_info_url, scopes, enabled)
+VALUES 
+    ('google', 'CONFIGURE_ME', 'CONFIGURE_ME', 
+     'https://accounts.google.com/o/oauth2/v2/auth',
+     'https://oauth2.googleapis.com/token',
+     'https://www.googleapis.com/oauth2/v2/userinfo',
+     ARRAY['openid', 'email', 'profile'], 
+     FALSE),
+    ('github', 'CONFIGURE_ME', 'CONFIGURE_ME',
+     'https://github.com/login/oauth/authorize',
+     'https://github.com/login/oauth/access_token',
+     'https://api.github.com/user',
+     ARRAY['user:email'],
+     FALSE)
+ON CONFLICT (name) DO NOTHING;
+
+-- ============================================================================
+-- Enhanced Comments for Documentation
+-- ============================================================================
+
+COMMENT ON TABLE public.users IS 'Core user accounts table with authentication and profile information';
+COMMENT ON TABLE public.workspaces IS 'Organization or team workspaces for multi-tenancy';
+COMMENT ON TABLE public.api_keys IS 'API keys for programmatic access to the system';
+COMMENT ON TABLE public.sessions IS 'Active user sessions for session management';
+COMMENT ON TABLE public.audit_logs IS 'Security and compliance audit trail';
+COMMENT ON TABLE public.oauth_accounts IS 'Linked OAuth accounts for social login';
+
+COMMENT ON COLUMN public.users.roles IS 'Array of role names: admin, user, viewer, etc.';
+COMMENT ON COLUMN public.users.locked_until IS 'Account lockout timestamp after failed login attempts';
+COMMENT ON COLUMN public.api_keys.scopes IS 'Array of permission scopes for fine-grained access control';
+COMMENT ON COLUMN public.api_keys.rate_limit IS 'Custom rate limit for this API key (requests per hour)';
 
 -- ============================================================================
 -- POST-MIGRATION VERIFICATION

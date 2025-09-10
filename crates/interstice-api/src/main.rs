@@ -1,12 +1,15 @@
 // interstice-api/src/main.rs
 use axum::{
-    middleware::{self, from_fn_with_state},
+    extract::Request,
+    middleware::{from_fn, from_fn_with_state, Next}, 
     Router,
+    Extension,
 };
 use interstice_adapters::{slack::SlackConfig, AdapterManager, PlatformAdapter, slack::SlackAdapter};
 use interstice_core::{analytics::AnalyticsEngine, storage::PostgresStorage, IntersticeEngine, MLPredictor, StorageBackend};
 use interstice_ml::{MLPipeline, adapters::MLPredictorAdapter};
 use sqlx::PgPool;
+use uuid::Uuid;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -23,10 +26,38 @@ use middleware_layer::{
     logging_middleware,
     security_headers_middleware,
     create_middleware_stack,
+    timeout_middleware,
+    TimeoutConfig,
+    TimeoutManager,
 };
 
-use crate::middleware_layer::analytics_tracking;
+use crate::{
+    middleware_layer::{
+        analytics_tracking, 
+        auth::{
+            auth_middleware,
+            require_role,
+            require_workspace,
+            AuthConfig,
+        },
+        rate_limit::{
+            RateLimiter,
+            RateLimitConfig,
+            RateLimitAlgorithm,
+            auth_rate_limit_middleware,
+            ip_rate_limit_middleware,
+            slack_rate_limit_middleware,
+            webhook_rate_limit_middleware,
+            init_global_rate_limiter,
+        }
+    }, 
+    routes::{
+        auth_protected_routes, 
+        auth_public_routes
+    }
+};
 
+#[derive(Clone)]
 pub struct AppState {
     /// Manages all platform adapters dynamically
     pub adapters: Arc<AdapterManager>,
@@ -40,9 +71,29 @@ pub struct AppState {
     pub db: PgPool,
     /// Analytics engine for metrics and insights
     pub analytics: Option<Arc<AnalyticsEngine>>,
+    /// Authentication configuration
+    pub auth_config: AuthConfig,
+    /// Rate limiter for API requests
+    pub rate_limiter: Arc<RateLimiter>,
+    /// Timeout manager for operation timeouts
+    pub timeout_manager: Arc<TimeoutManager>,
 }
 
 impl AppState {
+    /// Create a new app state
+    pub async fn new(db: PgPool) -> Self {
+        Self {
+            adapters: Arc::new(AdapterManager::new()),
+            slack_adapter: None,
+            core: Arc::new(IntersticeEngine::new()),
+            ml_pipeline: Arc::new(MLPipeline::new(interstice_ml::PipelineConfig::production(&std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"))).await.expect("Failed to initialize ML pipeline")),
+            db,
+            analytics: None,
+            auth_config: AuthConfig::from_env(),
+            rate_limiter: Arc::new(RateLimiter::new(1000, Duration::from_secs(3600))),
+            timeout_manager: Arc::new(TimeoutManager::new(TimeoutConfig::from_env())),
+        }
+    }
     /// Get the core engine for processing
     pub fn engine(&self) -> &Arc<IntersticeEngine> {
         &self.core
@@ -81,6 +132,12 @@ async fn main() {
     // Run migrations
     run_migrations(&db).await;
 
+    // Initialize authentication system
+    if let Err(e) = initialize_auth_system(&db).await {
+        error!("Failed to initialize auth system: {}", e);
+        std::process::exit(1);
+    }
+
     if let Err(e) = handlers::slack::initialize_encryption_key() {
         error!("Failed to initialize encryption key: {}", e);
         std::process::exit(1);
@@ -106,6 +163,12 @@ async fn main() {
         &core,
     ).await;
 
+    // Initialize distributed rate limiter
+    let rate_limiter = initialize_rate_limiter(db.clone());
+    
+    // Initialize global rate limiter for the application
+    init_global_rate_limiter(rate_limiter.clone());
+    
     // Create application state
     let state = Arc::new(AppState {
         adapters: Arc::new(adapters),
@@ -114,6 +177,9 @@ async fn main() {
         ml_pipeline,
         analytics,  // Add this
         db: db.clone(),
+        auth_config: AuthConfig::from_env(),
+        rate_limiter: Arc::new(rate_limiter),
+        timeout_manager: Arc::new(TimeoutManager::new(TimeoutConfig::from_env())),
     });
 
     // Start background tasks
@@ -253,7 +319,7 @@ async fn initialize_ml_components(
 /// Initialize core engine with ML and storage
 async fn initialize_core_engine(
     ml_predictor: Arc<dyn MLPredictor>,
-    db: PgPool,
+    _db: PgPool,
 ) -> Arc<IntersticeEngine> {
     // Create storage backend
     let storage_config = interstice_core::storage::StorageConfig::default();
@@ -267,6 +333,35 @@ async fn initialize_core_engine(
     info!("Core engine initialized with ML predictor and storage");
     
     Arc::new(engine)
+}
+
+/// Initialize production-ready distributed rate limiter
+fn initialize_rate_limiter(db: PgPool) -> RateLimiter {
+    let config = RateLimitConfig {
+        limit: std::env::var("RATE_LIMIT_REQUESTS_PER_HOUR")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(10000), // 10k requests per hour default
+        window_secs: 3600, // 1 hour window
+        algorithm: RateLimitAlgorithm::SlidingWindowCounter,
+        burst_capacity: Some(500), // Allow bursts up to 500 requests
+        refill_rate: Some(2.8), // ~10k/hour = 2.8 requests/second
+        distributed: true, // Use database for distributed rate limiting
+        custom_headers: std::collections::HashMap::new(),
+    };
+
+    let limiter = RateLimiter::with_database(db, config);
+    
+    // Start background cleanup task
+    let _cleanup_handle = limiter.start_cleanup_task();
+    
+    info!(
+        "Rate limiter initialized with distributed storage ({}req/hr, {} burst)",
+        std::env::var("RATE_LIMIT_REQUESTS_PER_HOUR").unwrap_or_else(|_| "10000".to_string()),
+        500
+    );
+    
+    limiter
 }
 
 /// Initialize analytics engine
@@ -333,7 +428,7 @@ async fn initialize_analytics_engine(
 
 /// Initialize platform adapters
 async fn initialize_adapters(
-    db: &PgPool,
+    _db: &PgPool,
     ml_pipeline: &Arc<MLPipeline>,
     _core: &Arc<IntersticeEngine>,
     ) -> (AdapterManager, Option<Arc<SlackAdapter>>) {
@@ -532,33 +627,193 @@ async fn monitor_system_health(state: &Arc<AppState>) {
 
 /// Build the application router with comprehensive middleware
 fn build_router(state: Arc<AppState>) -> Router {
-    // Create the base application with all middleware
-    let app = Router::new()
-        // Health check routes (public, minimal middleware)
+    // ========================================================================
+    // Public Routes (No Authentication Required)
+    // ========================================================================
+    
+    let public_routes = Router::new()
+        // Health checks (no auth required)
         .nest("/health", routes::health_routes())
-        
-        // API routes (protected with full middleware stack)
-        .nest("/api/v1", routes::api_routes())
-        
-        // Webhook routes (public but with signature verification)
+        // Authentication endpoints (public)
+        .nest("/auth", auth_public_routes())
+        // Apply strict rate limiting for auth endpoints
+        .route_layer(from_fn_with_state(
+            state.clone(),
+            auth_rate_limit_middleware
+        ))
+        // Apply IP-based rate limiting to all public routes
+        .route_layer(from_fn_with_state(
+            state.clone(),
+            ip_rate_limit_middleware
+        ));
+
+    // ========================================================================
+    // Protected API Routes (Authentication Required)
+    // ========================================================================
+    
+    let protected_api_routes = Router::new()
+        // Auth management (logout, profile, api keys)
+        .nest("/auth", auth_protected_routes())
+        // Core business logic routes
+        .nest("/workspaces", routes::workspace_routes())
+        .nest("/artifacts", routes::artifact_routes())
+        .nest("/outcomes", routes::outcome_routes())
+        .nest("/analytics", routes::analytics_routes())
+        // Note: General rate limiting handled through create_rate_limit_layer()
+        // Authentication middleware (validates JWT/API keys)
+        .layer(from_fn(|req: Request, next: Next| async move {
+            // Get state from request extensions
+            let state = req.extensions().get::<Arc<AppState>>().cloned()
+                .expect("AppState not found in request extensions");
+            auth_middleware(state, req, next).await
+        }))
+        // Workspace access validation
+        .route_layer(from_fn_with_state(
+            state.clone(),
+            require_workspace
+        ));
+
+    // ========================================================================
+    // Admin Routes (Admin Role Required)
+    // ========================================================================
+    
+    let admin_routes = Router::new()
+        .nest("/", routes::admin_routes())
+        // Note: General rate limiting handled through create_rate_limit_layer()
+        // Admin role requirement
+        .route_layer(from_fn(|req, next| {
+            Box::pin(async move {
+                require_role("admin", req, next).await
+            })
+        }))
+        .layer(from_fn(|req: Request, next: Next| async move {
+            // Get state from request extensions
+            let state = req.extensions().get::<Arc<AppState>>().cloned()
+                .expect("AppState not found in request extensions");
+            auth_middleware(state, req, next).await
+        }));
+    // ========================================================================
+    // Webhook Routes (Signature Verification Instead of JWT)
+    // ========================================================================
+    
+    let webhook_routes = Router::new()
         .nest("/webhooks", routes::webhook_routes())
+        // Webhook-specific rate limiting
+        .route_layer(from_fn_with_state(
+            state.clone(),
+            webhook_rate_limit_middleware
+        ))
+        // Slack-specific rate limiting for Slack webhooks
+        .route_layer(from_fn_with_state(
+            state.clone(),
+            slack_rate_limit_middleware
+        ))
+        // Webhook-specific middleware (signature verification)
+        .route_layer(from_fn_with_state(
+            state.clone(), 
+            middleware_layer::webhook_auth::verify_webhook_signature
+        ));
+
+    // ========================================================================
+    // Combine All Routes with Global Middleware
+    // ========================================================================
+    
+    Router::new()
+        // Mount routes at their respective paths
+        .merge(public_routes)
+        .nest("/api/v1", protected_api_routes)
+        .nest("/admin", admin_routes)
+        .merge(webhook_routes)
         
-        // Add global middleware that applies to all routes
-        .layer(middleware::from_fn(security_headers_middleware))
-        .layer(middleware::from_fn(logging_middleware))
-        .layer(middleware::from_fn(request_id_middleware))
-        
-        // Add the comprehensive middleware stack for compression, tracing, etc.
-        .layer(create_middleware_stack())
+        // Apply global middleware stack (order matters - applied bottom to top)
+        .layer(Extension(state.clone()))
+        .layer(from_fn(security_headers_middleware))
+        .layer(from_fn(logging_middleware))
+        .layer(from_fn(request_id_middleware))
+        .layer(from_fn_with_state(state.clone(), timeout_middleware))
         .layer(from_fn_with_state(state.clone(), analytics_tracking))
-        
-        // Add CORS as the outermost layer so it applies first
+        .layer(create_middleware_stack())
         .layer(cors_layer())
         
-        // Attach the application state
-        .with_state(state);
+        // Attach application state
+        .with_state(state)
+}
+
+
+async fn initialize_auth_system(db: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    // Verify critical tables exist
+    let tables = sqlx::query_scalar::<_, String>(
+        "SELECT table_name FROM information_schema.tables 
+         WHERE table_schema = 'public' 
+         AND table_name IN ('users', 'api_keys', 'refresh_tokens', 'sessions')
+         ORDER BY table_name"
+    )
+    .fetch_all(db)
+    .await?;
+
+    if tables.len() < 4 {
+        error!("Missing auth tables. Please run migrations.");
+        return Err("Missing auth tables".into());
+    }
+
+    // Clean up expired data on startup
+    sqlx::query!("DELETE FROM revoked_tokens WHERE expires_at < NOW()")
+        .execute(db)
+        .await?;
     
-    app
+    sqlx::query!("DELETE FROM password_reset_tokens WHERE expires_at < NOW() AND used = false")
+        .execute(db)
+        .await?;
+    
+    sqlx::query!("DELETE FROM sessions WHERE last_activity < NOW() - INTERVAL '30 days'")
+        .execute(db)
+        .await?;
+
+    // Create default admin user if none exists
+    let admin_exists = sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE 'admin' = ANY(roles))"
+    )
+    .fetch_one(db)
+    .await?;
+
+    if !admin_exists {
+        create_default_admin(db).await?;
+    }
+
+    info!("Auth system initialized successfully");
+    Ok(())
+}
+
+async fn create_default_admin(db: &PgPool) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::middleware_layer::auth::hash_password;
+    
+    let admin_email = std::env::var("ADMIN_EMAIL")
+        .unwrap_or_else(|_| "admin@interstice.com".to_string());
+    let admin_password = std::env::var("ADMIN_PASSWORD")
+        .unwrap_or_else(|_| "ChangeMe123!".to_string());
+    
+    let password_hash = hash_password(&admin_password)?;
+    let admin_id = Uuid::new_v4();
+    
+    sqlx::query!(
+        r#"
+        INSERT INTO users (
+            id, email, password_hash, roles, 
+            email_verified, created_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4, true, NOW(), NOW())
+        ON CONFLICT (email) DO NOTHING
+        "#,
+        admin_id,
+        admin_email,
+        password_hash,
+        &vec!["admin".to_string(), "user".to_string()]
+    )
+    .execute(db)
+    .await?;
+    
+    warn!("Default admin user created: {} (CHANGE PASSWORD IMMEDIATELY)", admin_email);
+    Ok(())
 }
 
 /// Start the HTTP server

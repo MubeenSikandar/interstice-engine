@@ -1,6 +1,6 @@
 //interstice-api/src/routes/api.rs
 use axum::{
-    extract::{ws, Path, Query, State}, http::StatusCode, middleware::{from_fn, from_fn_with_state}, response::{IntoResponse, Response}, routing::{get, post}, Json, Router
+    extract::{ws, Path, Query, State}, http::StatusCode, response::{IntoResponse, Response}, routing::{get, post}, Json, Router
 };
 use interstice_ml::Platform as MLPlatform;
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,7 @@ use tracing::info;
 use interstice_core::{
     analytics::{ExportFormat, MetricQuery}, outcome::{AutomationLevel, OutcomeState, RiskLevel}, types::{MetricValue, Platform, Priority, TimeRange, WorkspaceId}, Outcome, OutcomeType, UserId
 };
-use crate::{handlers::auth::{create_api_key, list_users, login, register}, middleware_layer::auth::{auth_middleware, require_role, require_workspace}, AppState};
+use crate::{AppState};
 
 #[derive(Deserialize)]
 pub struct PaginationParams {
@@ -51,45 +51,51 @@ struct ArtifactRow {
     metadata: Option<serde_json::Value>,
 }
 
-pub fn api_routes() -> Router<Arc<AppState>> {
+// ============================================================================
+// Workspace Routes
+// ============================================================================
+
+pub fn workspace_routes() -> Router<Arc<AppState>> {
     Router::new()
+        .route("/", get(list_workspaces).post(create_workspace))
+        .route("/:id", get(get_workspace).put(update_workspace).delete(delete_workspace))
+}
 
-        // Auth routes
-        .route("/auth/login", post(login))
-        .route("/auth/register", post(register))
+// ============================================================================
+// Artifact Routes
+// ============================================================================
 
+pub fn artifact_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/", get(list_artifacts).post(create_artifact))
+        .route("/:id", get(get_artifact))
+}
 
-        // Workspace routes
-        .route("/workspaces", get(list_workspaces).post(create_workspace))
-        .route("/workspaces/:id", get(get_workspace).put(update_workspace).delete(delete_workspace))
-        
-        // Artifact routes
-        .route("/artifacts", get(list_artifacts).post(create_artifact))
-        .route("/artifacts/:id", get(get_artifact))
+// ============================================================================
+// Outcome Routes
+// ============================================================================
 
-        // Admin routes - require admin role
-        .route("/admin/users", get(list_users))
-            .route_layer(from_fn(|req, next| {
-                require_role("admin", req, next)
-            }))
-        
-        // Auth and workspace middleware will be applied at the router level
-        
-        // Outcome routes
-        .route("/outcomes", get(list_outcomes).post(create_outcome))
-        .route("/outcomes/:id", get(get_outcome))
-        .route("/outcomes/:id/predict", post(predict_outcomes))
-        
-        // Analytics routes
-        .route("/analytics/dashboard", get(get_dashboard))
-        .route("/analytics/metrics", get(get_metrics))
-        .route("/analytics/metrics/query", post(query_metrics))
-        .route("/analytics/metrics/export", post(export_metrics))
-        .route("/analytics/health", get(analytics_health))
-        .route("/analytics/workspaces/:id/stats", get(get_workspace_analytics))
-        .route("/analytics/workspaces/:id/insights", get(get_workspace_insights))
-        .route("/analytics/ws/:workspace_id", get(analytics_websocket))
-        
+pub fn outcome_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/", get(list_outcomes).post(create_outcome))
+        .route("/:id", get(get_outcome))
+        .route("/:id/predict", post(predict_outcomes))
+}
+
+// ============================================================================
+// Analytics Routes
+// ============================================================================
+
+pub fn analytics_routes() -> Router<Arc<AppState>> {
+    Router::new()
+        .route("/dashboard", get(get_dashboard))
+        .route("/metrics", get(get_metrics))
+        .route("/metrics/query", post(query_metrics))
+        .route("/metrics/export", post(export_metrics))
+        .route("/health", get(analytics_health))
+        .route("/workspaces/:id/stats", get(get_workspace_analytics))
+        .route("/workspaces/:id/insights", get(get_workspace_insights))
+        .route("/ws/:workspace_id", get(analytics_websocket))
 }
 
 // Workspace handlers
@@ -713,7 +719,7 @@ async fn get_metrics(
     if let Some(_analytics) = &state.analytics {
         let workspace_id = params.workspace_id.unwrap_or_else(|| WorkspaceId::new());
         
-        // Get ML model metrics if available
+        // Get ML model metrics if available with timeout
         let model_metrics = match state.ml_pipeline.get_model_metrics(*workspace_id.as_uuid()).await {
             Ok(metrics) => Some(MLModelMetrics {
                 accuracy: metrics.accuracy,
@@ -810,7 +816,7 @@ async fn handle_analytics_ws(
                 // Send real-time metrics
                 if let Ok(metrics) = analytics.get_dashboard_metrics(WorkspaceId::from_uuid(workspace_id)).await {
                     let msg = ws::Message::Text(
-                        serde_json::to_string(&metrics).unwrap_or_default()
+                        serde_json::to_string(&metrics).unwrap_or_default().into()
                     );
                     if socket.send(msg).await.is_err() {
                         break;

@@ -5,13 +5,13 @@ pub mod cors;
 pub mod rate_limit;
 pub mod webhook_auth;
 pub mod analytics;
+pub mod timeout;
 
 use axum::{
     extract::Request,
     middleware::Next,
     response::Response,
 };
-use std::time::Duration;
 use uuid::Uuid;
 use tracing::{info, debug};
 use tower::ServiceBuilder;
@@ -19,34 +19,12 @@ use tower::ServiceBuilder;
 // Re-export middleware functions
 pub use cors::cors_layer;
 pub use analytics::analytics_tracking;
+pub use timeout::{
+    timeout_middleware,
+    TimeoutConfig,
+    TimeoutManager,
+};
 
-// Re-export auth middleware and helpers
-
-/// Create a comprehensive middleware stack for protected routes
-pub fn protected_routes_middleware() -> ServiceBuilder<
-    tower::layer::util::Stack<
-        tower::timeout::TimeoutLayer,
-        tower::layer::util::Stack<
-            tower_http::limit::RequestBodyLimitLayer,
-            tower::layer::util::Identity,
-        >,
-    >,
-> {
-    ServiceBuilder::new()
-        .layer(body_limit_layer())
-        .layer(timeout_layer())
-}
-
-/// Create a comprehensive middleware stack for public routes  
-pub fn public_routes_middleware() -> ServiceBuilder<
-    tower::layer::util::Stack<
-        tower::timeout::TimeoutLayer,
-        tower::layer::util::Identity,
-    >,
-> {
-    ServiceBuilder::new()
-        .layer(timeout_layer())
-}
 
 /// Request ID middleware - adds a unique ID to each request
 pub async fn request_id_middleware(
@@ -181,26 +159,6 @@ pub fn compression_layer() -> tower_http::compression::CompressionLayer {
         .br(true)
         .deflate(true)
         .quality(tower_http::CompressionLevel::Default)
-}
-
-/// Timeout middleware configuration with configurable duration
-pub fn timeout_layer() -> tower::timeout::TimeoutLayer {
-    let timeout_secs = std::env::var("REQUEST_TIMEOUT_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(30);
-    
-    tower::timeout::TimeoutLayer::new(Duration::from_secs(timeout_secs))
-}
-
-/// Request body limit middleware with configurable limit
-pub fn body_limit_layer() -> tower_http::limit::RequestBodyLimitLayer {
-    let limit_mb = std::env::var("REQUEST_BODY_LIMIT_MB")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(10);
-    
-    tower_http::limit::RequestBodyLimitLayer::new(limit_mb * 1024 * 1024)
 }
 
 /// Create a comprehensive middleware stack for the entire application

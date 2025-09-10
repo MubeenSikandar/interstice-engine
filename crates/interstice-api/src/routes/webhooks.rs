@@ -1,32 +1,29 @@
 // interstice-api/src/routes/webhooks.rs
 
+use crate::{
+    handlers::slack::{
+        get_oauth_url, handle_events, handle_interactions, handle_oauth_callback,
+        handle_slash_commands,
+    },
+    AppState,
+};
 use axum::{
-    routing::{get, post, delete},  // Added delete import
-    Router,
-    extract::{State, Path, Query},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    routing::{delete, get, post},
+    Json, Router,
 };
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tower::ServiceBuilder;
 use tower_http::limit::RequestBodyLimitLayer;
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use tracing::{info, warn};
-use crate::{AppState, handlers};
+use uuid::Uuid;
 
 // Constants for webhook configuration
 const MAX_WEBHOOK_BODY_SIZE: usize = 10 * 1024 * 1024; // 10MB
-const WEBHOOK_TIMEOUT_SECS: u64 = 30;
-
-#[derive(Debug, Deserialize)]
-pub struct WebhookQuery {
-    /// Optional verification token for additional security
-    pub token: Option<String>,
-    /// Debug mode flag for testing
-    pub debug: Option<bool>,
-}
+const WEBHOOK_TIMEOUT_SECS: u64 = 30; // 30 seconds for webhook processing
 
 #[derive(Debug, Serialize)]
 pub struct WebhookResponse {
@@ -41,43 +38,33 @@ pub fn webhook_routes() -> Router<Arc<AppState>> {
     Router::new()
         // Slack webhook endpoints
         .nest("/slack", slack_webhook_routes())
-        
         // GitHub webhook endpoints
         .nest("/github", github_webhook_routes())
-        
         // Generic webhook endpoints
         .nest("/custom", custom_webhook_routes())
-        
         // Webhook management endpoints
         .route("/", get(list_webhooks))
         .route("/:webhook_id", get(get_webhook_status))
         .route("/:webhook_id/logs", get(get_webhook_logs))
         .route("/test", post(test_webhook))
-        
         // Apply middleware to all webhook routes
         .layer(
             ServiceBuilder::new()
                 // Add request body size limit
                 .layer(RequestBodyLimitLayer::new(MAX_WEBHOOK_BODY_SIZE))
                 // Add request ID for tracing
-                .layer(tower_http::trace::TraceLayer::new_for_http())
+                .layer(tower_http::trace::TraceLayer::new_for_http()),
         )
 }
 
 /// Slack-specific webhook routes
 fn slack_webhook_routes() -> Router<Arc<AppState>> {
     Router::new()
-        .route("/events", post(handlers::slack::handle_events))
-        .route("/commands", post(handlers::slack::handle_slash_commands))
-        .route("/interactions", post(handlers::slack::handle_interactions))
-        .route("/oauth", get(handlers::slack::handle_oauth_callback))
-        .route("/oauth/url", get(handlers::slack::get_oauth_url))
-        .route("/health", get(handlers::slack::slack_health))
-        // Add rate limiting specifically for Slack
-        .layer(
-            ServiceBuilder::new()
-                .layer(crate::middleware_layer::rate_limit::slack_rate_limit())
-        )
+        .route("/events", post(handle_events))
+        .route("/commands", post(handle_slash_commands))
+        .route("/interactions", post(handle_interactions))
+        .route("/oauth", get(handle_oauth_callback))
+        .route("/oauth/url", get(get_oauth_url))
 }
 
 /// GitHub webhook routes
@@ -88,7 +75,7 @@ fn github_webhook_routes() -> Router<Arc<AppState>> {
         // GitHub-specific middleware
         .layer(
             ServiceBuilder::new()
-                .layer(crate::middleware_layer::webhook_auth::github_signature_middleware())
+                .layer(crate::middleware_layer::webhook_auth::github_signature_middleware()),
         )
 }
 
@@ -101,7 +88,7 @@ fn custom_webhook_routes() -> Router<Arc<AppState>> {
         // Custom webhook authentication
         .layer(
             ServiceBuilder::new()
-                .layer(crate::middleware_layer::webhook_auth::custom_webhook_auth())
+                .layer(crate::middleware_layer::webhook_auth::custom_webhook_auth()),
         )
 }
 
@@ -112,12 +99,12 @@ async fn list_webhooks(
     let webhooks = sqlx::query_as!(
         WebhookInfo,
         r#"
-        SELECT 
-            id, 
-            platform, 
-            url, 
-            active as "active!", 
-            created_at, 
+        SELECT
+            id,
+            platform,
+            url,
+            active as "active!",
+            created_at,
             last_triggered_at,
             trigger_count as "trigger_count!"
         FROM webhooks
@@ -143,7 +130,7 @@ async fn get_webhook_status(
     let status = sqlx::query_as!(
         WebhookStatus,
         r#"
-        SELECT 
+        SELECT
             w.id,
             w.platform,
             w.url,
@@ -155,7 +142,7 @@ async fn get_webhook_status(
             w.consecutive_failures as "consecutive_failures!",
             COUNT(wl.id) as "recent_events!"
         FROM webhooks w
-        LEFT JOIN webhook_logs wl ON w.id = wl.webhook_id 
+        LEFT JOIN webhook_logs wl ON w.id = wl.webhook_id
             AND wl.created_at > NOW() - INTERVAL '1 hour'
         WHERE w.id = $1
         GROUP BY w.id
@@ -185,7 +172,7 @@ async fn get_webhook_logs(
     let logs = sqlx::query_as!(
         WebhookLog,
         r#"
-        SELECT 
+        SELECT
             id,
             webhook_id,
             event_type,
@@ -216,7 +203,7 @@ async fn get_webhook_logs(
 
 /// Test webhook endpoint
 async fn test_webhook(
-    State(state): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     Json(payload): Json<TestWebhookRequest>,
 ) -> Result<Json<TestWebhookResponse>, StatusCode> {
     info!("Testing webhook to URL: {}", payload.url);
@@ -224,7 +211,7 @@ async fn test_webhook(
     // Send test request
     let client = reqwest::Client::new();
     let start = std::time::Instant::now();
-    
+
     let response = client
         .post(&payload.url)
         .json(&payload.test_payload)
@@ -262,25 +249,37 @@ async fn handle_github_webhook(
 
     info!("Received GitHub webhook: {}", event_type);
 
-    // Parse and process based on event type
-    match event_type {
-        "push" => process_github_push(state, body).await?,
-        "pull_request" => process_github_pr(state, body).await?,
-        "issues" => process_github_issue(state, body).await?,
-        "ping" => return Ok((StatusCode::OK, "pong")),
-        _ => {
-            warn!("Unhandled GitHub event type: {}", event_type);
-        }
-    }
+    // Process with timeout to prevent hanging
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(WEBHOOK_TIMEOUT_SECS),
+        async {
+            // Parse and process based on event type
+            match event_type {
+                "push" => process_github_push(state, body).await?,
+                "pull_request" => process_github_pr(state, body).await?,
+                "issues" => process_github_issue(state, body).await?,
+                "ping" => return Ok((StatusCode::OK, "pong")),
+                _ => {
+                    warn!("Unhandled GitHub event type: {}", event_type);
+                }
+            }
+            Ok((StatusCode::OK, "processed"))
+        },
+    )
+    .await
+    .map_err(|_| {
+        warn!(
+            "GitHub webhook processing timed out after {} seconds",
+            WEBHOOK_TIMEOUT_SECS
+        );
+        StatusCode::REQUEST_TIMEOUT
+    })?;
 
-    Ok((StatusCode::OK, "processed"))
+    result
 }
 
 /// Process GitHub push events
-async fn process_github_push(
-    _state: Arc<AppState>,
-    _body: String,
-) -> Result<(), StatusCode> {
+async fn process_github_push(_state: Arc<AppState>, _body: String) -> Result<(), StatusCode> {
     // Parse and process push event
     // Store artifacts in database
     info!("Processing GitHub push event");
@@ -288,20 +287,14 @@ async fn process_github_push(
 }
 
 /// Process GitHub PR events
-async fn process_github_pr(
-    _state: Arc<AppState>,
-    _body: String,
-) -> Result<(), StatusCode> {
+async fn process_github_pr(_state: Arc<AppState>, _body: String) -> Result<(), StatusCode> {
     // Parse and process PR event
     info!("Processing GitHub PR event");
     Ok(())
 }
 
 /// Process GitHub issue events
-async fn process_github_issue(
-    _state: Arc<AppState>,
-    _body: String,
-) -> Result<(), StatusCode> {
+async fn process_github_issue(_state: Arc<AppState>, _body: String) -> Result<(), StatusCode> {
     // Parse and process issue event
     info!("Processing GitHub issue event");
     Ok(())
@@ -325,38 +318,62 @@ async fn handle_custom_webhook(
         .and_then(|s| Uuid::parse_str(s).ok())
         .ok_or(StatusCode::BAD_REQUEST)?;
 
-    // Verify webhook exists and is active
-    let _webhook = sqlx::query!(
-        "SELECT id, secret FROM webhooks WHERE id = $1 AND active = true",
-        webhook_id
+    // Process with timeout to prevent hanging
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(WEBHOOK_TIMEOUT_SECS),
+        async {
+            // Verify webhook exists and is active with timeout
+            let _webhook = state
+                .timeout_manager
+                .execute_with_timeout(
+                    || async {
+                        sqlx::query!(
+                            "SELECT id, secret FROM webhooks WHERE id = $1 AND active = true",
+                            webhook_id
+                        )
+                        .fetch_optional(&state.db)
+                        .await
+                    },
+                    state.timeout_manager.config().webhook_processing,
+                    "webhook_verification",
+                )
+                .await
+                .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            // Process webhook payload
+            info!("Processing custom webhook: {}", webhook_id);
+
+            // Update webhook statistics
+            sqlx::query!(
+                r#"
+                UPDATE webhooks
+                SET last_triggered_at = NOW(),
+                    trigger_count = trigger_count + 1
+                WHERE id = $1
+                "#,
+                webhook_id
+            )
+            .execute(&state.db)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+
+            Ok(Json(WebhookResponse {
+                success: true,
+                message: "Webhook processed successfully".to_string(),
+                webhook_id: Some(webhook_id),
+            }))
+        },
     )
-    .fetch_optional(&state.db)
     .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-    .ok_or(StatusCode::NOT_FOUND)?;
+    .map_err(|_| {
+        warn!(
+            "Custom webhook processing timed out after {} seconds",
+            WEBHOOK_TIMEOUT_SECS
+        );
+        StatusCode::REQUEST_TIMEOUT
+    })?;
 
-    // Process webhook payload
-    info!("Processing custom webhook: {}", webhook_id);
-
-    // Update webhook statistics
-    sqlx::query!(
-        r#"
-        UPDATE webhooks 
-        SET last_triggered_at = NOW(), 
-            trigger_count = trigger_count + 1
-        WHERE id = $1
-        "#,
-        webhook_id
-    )
-    .execute(&state.db)
-    .await
-    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-
-    Ok(Json(WebhookResponse {
-        success: true,
-        message: "Webhook processed successfully".to_string(),
-        webhook_id: Some(webhook_id),
-    }))
+    result
 }
 
 /// Register a new custom webhook
@@ -384,7 +401,10 @@ async fn register_custom_webhook(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    info!("Registered new webhook: {} for platform: {}", webhook_id, request.platform);
+    info!(
+        "Registered new webhook: {} for platform: {}",
+        webhook_id, request.platform
+    );
 
     Ok(Json(RegisterWebhookResponse {
         webhook_id,
@@ -418,11 +438,11 @@ async fn delete_custom_webhook(
 fn generate_webhook_secret() -> String {
     use rand::Rng;
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    let mut rng = rand::rng();  // Fixed: use rng() instead of deprecated thread_rng()
-    
+    let mut rng = rand::rng(); // Fixed: use rng() instead of deprecated thread_rng()
+
     (0..32)
         .map(|_| {
-            let idx = rng.random_range(0..CHARSET.len());  // Fixed: use random_range()
+            let idx = rng.random_range(0..CHARSET.len()); // Fixed: use random_range()
             CHARSET[idx] as char
         })
         .collect()

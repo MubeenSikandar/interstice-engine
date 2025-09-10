@@ -13,6 +13,8 @@ help:
 	@echo "Database:"
 	@echo "  setup-db       - Set up PostgreSQL database with ML tables"
 	@echo "  migrate        - Run database migrations"
+	@echo "  migrate-down   - Revert last migration"
+	@echo "  migrate-status - Show migration status"
 	@echo "  db-reset       - Reset database (WARNING: destroys data)"
 	@echo ""
 	@echo "Docker:"
@@ -63,12 +65,15 @@ setup-db:
 
 migrate:
 	@echo "📝 Running database migrations..."
-	@if [ -n "$$DATABASE_URL" ]; then \
-		sqlx migrate run --database-url "$$DATABASE_URL" --source migrations; \
-	else \
-		echo "❌ DATABASE_URL not set. Please set it in your .env file"; \
-		exit 1; \
-	fi
+	@./scripts/migrate.sh up
+
+migrate-down:
+	@echo "📝 Reverting last migration..."
+	@./scripts/migrate.sh down
+
+migrate-status:
+	@echo "📊 Migration status:"
+	@./scripts/migrate.sh status
 
 db-reset:
 	@echo "⚠️  WARNING: This will destroy all data!"

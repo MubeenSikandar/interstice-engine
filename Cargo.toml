@@ -32,11 +32,11 @@ vaultrs = "0.7.4"
 
 
 # Database
-sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "json", "bigdecimal"] }
+sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres", "uuid", "chrono", "json", "bigdecimal", "ipnetwork"] }
 redis = { version = "0.24", features = ["tokio-comp", "connection-manager"] }
 
 # HTTP/Web
-axum = "0.7"
+axum = "0.8.4"
 reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
 tower = { version = "0.4", features = ["timeout", "util"] }
 tower-http = { version = "0.5", features = [

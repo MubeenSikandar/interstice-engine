@@ -4,13 +4,14 @@ use axum::{
     extract::{Request, State},
     http::{HeaderMap, StatusCode},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::sync::Arc;
 use tracing::{info, warn, error};
 use crate::AppState;
+use super::rate_limit::extract_client_ip;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -68,6 +69,69 @@ pub async fn verify_github_signature(
 
     info!("GitHub signature verified successfully");
     Ok(())
+}
+
+/// Main webhook signature verification middleware
+pub async fn verify_webhook_signature(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    // Apply webhook rate limiting first
+    let client_ip = extract_client_ip(&request);
+    let client_id = format!("webhook:{}", client_ip);
+    
+    // Check rate limit for webhooks
+    let allowed = state.rate_limiter.check_rate_limit(&client_id).await;
+    
+    if !allowed {
+        warn!(
+            client_ip = %client_ip,
+            path = %request.uri().path(),
+            "Webhook rate limit exceeded"
+        );
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+
+    // For Slack webhooks, we use their specific verification
+    if request.uri().path().contains("slack") {
+        // Slack verification is handled in the handler
+        return next.run(request).await;
+    }
+
+    // For other webhooks, use general verification
+    let (parts, body) = request.into_parts();
+    let body_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+
+    // Verify based on webhook type
+    let verification_result = if parts.headers.get("X-GitHub-Event").is_some() {
+        // GitHub webhook
+        if let Ok(secret) = std::env::var("GITHUB_WEBHOOK_SECRET") {
+            verify_github_signature(&parts.headers, &body_bytes, &secret).await
+        } else {
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    } else {
+        // Custom webhook
+        if let Ok(secret) = std::env::var("WEBHOOK_SECRET") {
+            verify_custom_webhook_signature(&parts.headers, &body_bytes, &secret).await
+        } else {
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    };
+
+    if let Err(status) = verification_result {
+        return status.into_response();
+    }
+
+    // Reconstruct request with body
+    let request = Request::from_parts(parts, axum::body::Body::from(body_bytes));
+    next.run(request).await
 }
 
 /// Verify custom webhook signature using HMAC-SHA256
@@ -140,148 +204,3 @@ fn constant_time_compare(a: &str, b: &str) -> bool {
 
     result == 0
 }
-
-/// Verify webhook IP whitelist
-/// Verify webhook IP whitelist
-pub async fn verify_webhook_ip(
-    State(state): State<Arc<AppState>>,
-    request: Request,
-    next: Next,
-) -> Result<Response, StatusCode> {
-    // Extract client IP
-    let client_ip = request
-        .headers()
-        .get("X-Forwarded-For")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(',').next().unwrap_or(s).trim())
-        .or_else(|| {
-            request
-                .headers()
-                .get("X-Real-IP")
-                .and_then(|v| v.to_str().ok())
-        })
-        .unwrap_or("unknown");
-
-    let is_whitelisted = sqlx::query!(
-        r#"
-        SELECT 1 as exists FROM webhook_ip_whitelist
-        WHERE ip_address::text = $1
-        "#,
-        client_ip
-    )
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| {
-        error!("Failed to check IP whitelist: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?
-    .is_some();
-
-    if !is_whitelisted {
-        warn!("Webhook request from non-whitelisted IP: {}", client_ip);
-        return Err(StatusCode::FORBIDDEN);
-    }
-
-    Ok(next.run(request).await)
-}
-
-/// Verify webhook bearer token
-pub async fn verify_webhook_bearer_token(
-    headers: &HeaderMap,
-    expected_token: &str,
-) -> Result<(), StatusCode> {
-    let auth_header = headers
-        .get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| {
-            warn!("Missing Authorization header");
-            StatusCode::UNAUTHORIZED
-        })?;
-
-    if !auth_header.starts_with("Bearer ") {
-        warn!("Invalid Authorization header format");
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
-    let token = &auth_header[7..];
-    
-    if !constant_time_compare(token, expected_token) {
-        warn!("Invalid webhook bearer token");
-        return Err(StatusCode::UNAUTHORIZED);
-    }
-
-    Ok(())
-}
-
-/// Webhook retry mechanism with exponential backoff
-pub async fn retry_webhook(
-    url: &str,
-    payload: &serde_json::Value,
-    secret: Option<&str>,
-    max_retries: u32,
-) -> Result<reqwest::Response, String> {
-    let client = reqwest::Client::new();
-    let mut attempt = 0;
-    let mut delay = Duration::from_secs(1);
-
-    loop {
-        attempt += 1;
-        
-        let mut request = client
-            .post(url)
-            .json(payload)
-            .timeout(Duration::from_secs(30));
-
-        // Add signature if secret provided
-        if let Some(secret) = secret {
-            let timestamp = chrono::Utc::now().timestamp();
-            let body = serde_json::to_vec(payload).unwrap();
-            
-            let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
-            mac.update(format!("{}", timestamp).as_bytes());
-            mac.update(&body);
-            let signature = format!("{:x}", mac.finalize().into_bytes());
-
-            request = request
-                .header("X-Webhook-Signature", signature)
-                .header("X-Webhook-Timestamp", timestamp.to_string());
-        }
-
-        match request.send().await {
-            Ok(response) if response.status().is_success() => {
-                info!("Webhook delivered successfully to {}", url);
-                return Ok(response);
-            }
-            Ok(response) => {
-                warn!(
-                    "Webhook delivery failed with status {}: attempt {}/{}",
-                    response.status(),
-                    attempt,
-                    max_retries
-                );
-                
-                if attempt >= max_retries {
-                    return Err(format!("Webhook delivery failed after {} attempts", max_retries));
-                }
-            }
-            Err(e) => {
-                warn!(
-                    "Webhook delivery error: {} - attempt {}/{}",
-                    e,
-                    attempt,
-                    max_retries
-                );
-                
-                if attempt >= max_retries {
-                    return Err(format!("Webhook delivery failed: {}", e));
-                }
-            }
-        }
-
-        // Exponential backoff
-        tokio::time::sleep(delay).await;
-        delay = std::cmp::min(delay * 2, Duration::from_secs(60));
-    }
-}
-
-use std::time::Duration;

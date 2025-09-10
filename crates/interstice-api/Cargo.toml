@@ -15,7 +15,7 @@ interstice-ml = { path = "../interstice-ml" }
 
 # Workspace dependencies
 tokio = { workspace = true }
-axum = { workspace = true, features = ["ws"] }
+axum = { workspace = true, features = ["ws", "macros"] }
 tower = { workspace = true }
 tower-http = { workspace = true }
 serde = { workspace = true }
@@ -26,7 +26,7 @@ tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
 slack-morphism = {workspace = true}
 uuid = {workspace = true}
-sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "migrate"] }
+sqlx = { workspace = true, features = ["runtime-tokio-rustls", "postgres", "migrate", "ipnetwork"] }
 async-trait = {workspace = true}
 
 # Add these
@@ -46,6 +46,12 @@ once_cell = "1.21.3"
 regex = "1.11.2"
 ring = "0.17.14"
 bcrypt = "0.17.1"
+ipnetwork = "0.21.1"
+validator = { version = "0.20", features = ["derive"] }
+dashmap = "6.1.0"
+parking_lot = "0.12.4"
+thiserror = "2.0.16"
+futures = "0.3.31"
 
 [features]
 default = []

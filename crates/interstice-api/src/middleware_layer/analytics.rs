@@ -7,7 +7,7 @@ use axum::{
     response::Response,
 };
 use interstice_core::{
-    analytics::{create_metric_event, create_tagged_metric, MetricEvent}, types::MetricValue, WorkspaceId};
+    analytics::create_tagged_metric, types::MetricValue, WorkspaceId};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug};
