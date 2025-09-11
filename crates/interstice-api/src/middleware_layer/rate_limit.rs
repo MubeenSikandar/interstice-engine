@@ -855,9 +855,9 @@ pub async fn webhook_rate_limit_middleware(
     Ok(next.run(request).await)
 }
 
-pub fn slack_rate_limit() -> tower::ServiceBuilder<tower::layer::util::Identity> {
-    tower::ServiceBuilder::new()
-}
+// pub fn slack_rate_limit() -> tower::ServiceBuilder<tower::layer::util::Identity> {
+//     tower::ServiceBuilder::new()
+// }
 
 
 #[cfg(test)]

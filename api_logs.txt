@@ -1,0 +1,1454 @@
+warning: unused import: `TaskStatus`
+  --> crates/interstice-core/src/outcome.rs:16:161
+   |
+16 | use crate::artifact::{Artifact, ArtifactType, AttendeeResponse, CIStatus, DeploymentStrategy, Environment, IssueState, MeetingType, PullRequestState, Severity, TaskStatus};
+   |                                                                                                                                                                 ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused variable: `outcome_predictions`
+   --> crates/interstice-core/src/lib.rs:410:13
+    |
+410 |         let outcome_predictions = if self.config.enable_outcome_mapping && !artifacts.is_empty() {
+    |             ^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_outcome_predictions`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `query`
+   --> crates/interstice-core/src/lib.rs:504:68
+    |
+504 |     pub async fn query_artifacts(&self, workspace_id: WorkspaceId, query: ArtifactQuery) -> Result<Vec<Artifact>> {
+    |                                                                    ^^^^^ help: if this is intentional, prefix it with an underscore: `_query`
+
+warning: value assigned to `predictions` is never read
+   --> crates/interstice-core/src/outcome.rs:488:17
+    |
+488 |         let mut predictions = Vec::new();
+    |                 ^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` on by default
+
+warning: unused variable: `title`
+   --> crates/interstice-core/src/outcome.rs:520:25
+    |
+520 |                 number, title, state, files_changed, additions, deletions, 
+    |                         ^^^^^ help: try ignoring the field: `title: _`
+
+warning: unused variable: `merged`
+   --> crates/interstice-core/src/outcome.rs:521:17
+    |
+521 |                 merged, draft, base_branch, head_branch, author, reviewers, 
+    |                 ^^^^^^ help: try ignoring the field: `merged: _`
+
+warning: unused variable: `author`
+   --> crates/interstice-core/src/outcome.rs:521:58
+    |
+521 |                 merged, draft, base_branch, head_branch, author, reviewers, 
+    |                                                          ^^^^^^ help: try ignoring the field: `author: _`
+
+warning: unused variable: `is_release`
+   --> crates/interstice-core/src/outcome.rs:536:21
+    |
+536 |                 let is_release = base_branch.contains("release") || head_branch.contains("release");
+    |                     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_is_release`
+
+warning: unused variable: `title`
+   --> crates/interstice-core/src/outcome.rs:597:21
+    |
+597 |                 id, title, state, priority, assignees, labels, story_points, 
+    |                     ^^^^^ help: try ignoring the field: `title: _`
+
+warning: unused variable: `labels`
+   --> crates/interstice-core/src/outcome.rs:597:56
+    |
+597 |                 id, title, state, priority, assignees, labels, story_points, 
+    |                                                        ^^^^^^ help: try ignoring the field: `labels: _`
+
+warning: unused variable: `organizer`
+   --> crates/interstice-core/src/outcome.rs:669:38
+    |
+669 |                 duration, attendees, organizer, meeting_type, recurring, 
+    |                                      ^^^^^^^^^-
+    |                                      |
+    |                                      help: try removing the field
+
+warning: unused variable: `recording_available`
+   --> crates/interstice-core/src/outcome.rs:670:17
+    |
+670 |                 recording_available, action_items, decisions, .. 
+    |                 ^^^^^^^^^^^^^^^^^^^-
+    |                 |
+    |                 help: try removing the field
+
+warning: unused variable: `auto_deployed`
+   --> crates/interstice-core/src/outcome.rs:719:17
+    |
+719 |                 auto_deployed, affected_services, deployment_strategy, health_checks, .. 
+    |                 ^^^^^^^^^^^^^-
+    |                 |
+    |                 help: try removing the field
+
+warning: methods `generate_reasoning`, `suggest_targets`, `estimate_impact`, `recommend_priority`, and `merge_similar_predictions` are never used
+   --> crates/interstice-core/src/outcome.rs:911:8
+    |
+444 | impl OutcomeMapper {
+    | ------------------ methods in this implementation
+...
+911 |     fn generate_reasoning(&self, artifact: &Artifact, outcome_type: &str) -> String {
+    |        ^^^^^^^^^^^^^^^^^^
+...
+921 |     fn suggest_targets(&self, artifact_type: &ArtifactType) -> Vec<OutcomeTarget> {
+    |        ^^^^^^^^^^^^^^^
+...
+937 |     fn estimate_impact(&self, artifact_type: &ArtifactType) -> f64 {
+    |        ^^^^^^^^^^^^^^^
+...
+957 |     fn recommend_priority(&self, artifact_type: &ArtifactType) -> Priority {
+    |        ^^^^^^^^^^^^^^^^^^
+...
+981 |     fn merge_similar_predictions(&self, predictions: Vec<OutcomePrediction>) -> Vec<OutcomePrediction> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: `interstice-core` (lib) generated 14 warnings (run `cargo fix --lib -p interstice-core` to apply 4 suggestions)
+warning: variant `iOS` should have an upper camel case name
+  --> crates/interstice-ml/src/inference/edge.rs:56:5
+   |
+56 |     iOS,
+   |     ^^^ help: convert the identifier to upper camel case (notice the capitalization): `IOs`
+   |
+   = note: `#[warn(non_camel_case_types)]` on by default
+
+warning: unexpected `cfg` condition value: `cuda`
+   --> crates/interstice-ml/src/inference/mod.rs:145:15
+    |
+145 |         #[cfg(feature = "cuda")]
+    |               ^^^^^^^^^^^^^^^^ help: remove the condition
+    |
+    = note: no expected values for `feature`
+    = help: consider adding `cuda` as a feature in `Cargo.toml`
+    = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+    = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unused variable: `epoch`
+   --> crates/interstice-ml/src/models/mod.rs:686:9
+    |
+686 |         epoch: usize,
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_epoch`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `training`
+   --> crates/interstice-ml/src/models/mod.rs:731:63
+    |
+731 |     async fn forward_batch(&self, batch: &[ProcessedExample], training: bool) -> Result<Tensor> {
+    |                                                               ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_training`
+
+warning: unused variable: `name`
+   --> crates/interstice-ml/src/models/mod.rs:384:14
+    |
+384 |         for (name, tensor) in tensors {
+    |              ^^^^ help: if this is intentional, prefix it with an underscore: `_name`
+
+warning: unused variable: `eval_examples`
+   --> crates/interstice-ml/src/training/mod.rs:504:13
+    |
+504 |         let eval_examples = &examples[split_idx..];
+    |             ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_eval_examples`
+
+warning: unused variable: `config`
+   --> crates/interstice-ml/src/inference/edge.rs:528:9
+    |
+528 |         config: &QuantizationConfig,
+    |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_config`
+
+warning: unused variable: `original`
+   --> crates/interstice-ml/src/inference/edge.rs:572:9
+    |
+572 |         original: &OrganizationModel,
+    |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_original`
+
+warning: unused variable: `quantized`
+   --> crates/interstice-ml/src/inference/edge.rs:573:9
+    |
+573 |         quantized: &[u8],
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_quantized`
+
+warning: unused variable: `config`
+   --> crates/interstice-ml/src/inference/edge.rs:701:9
+    |
+701 |         config: PruningConfig,
+    |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_config`
+
+warning: unused variable: `teacher_weights`
+    --> crates/interstice-ml/src/inference/edge.rs:1039:9
+     |
+1039 |         teacher_weights: &Weights,
+     |         ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_teacher_weights`
+
+warning: unused variable: `config`
+    --> crates/interstice-ml/src/inference/edge.rs:1041:9
+     |
+1041 |         config: &DistillationConfig,
+     |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_config`
+
+warning: unused variable: `platform`
+    --> crates/interstice-ml/src/inference/edge.rs:1241:9
+     |
+1241 |         platform: Platform,
+     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_platform`
+
+warning: unused variable: `model`
+    --> crates/interstice-ml/src/inference/edge.rs:1242:9
+     |
+1242 |         model: OrganizationModel,
+     |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_model`
+
+warning: unused variable: `name`
+    --> crates/interstice-ml/src/models/mod.rs:1106:14
+     |
+1106 |         for (name, tensor) in tensors {
+     |              ^^^^ help: if this is intentional, prefix it with an underscore: `_name`
+
+warning: unused variable: `level`
+   --> crates/interstice-ml/src/training/model_storage.rs:381:40
+    |
+381 |             CompressionStrategy::Lz4 { level } => {
+    |                                        ^^^^^ help: try ignoring the field: `level: _`
+
+warning: unused variable: `window`
+   --> crates/interstice-ml/src/training/monitoring.rs:543:66
+    |
+543 |                 AlertCondition::TrainingFailureRate { threshold, window } => {
+    |                                                                  ^^^^^^ help: try ignoring the field: `window: _`
+
+warning: unused variable: `duration`
+   --> crates/interstice-ml/src/training/monitoring.rs:549:59
+    |
+549 |                 AlertCondition::QueueBacklog { threshold, duration } => {
+    |                                                           ^^^^^^^^ help: try ignoring the field: `duration: _`
+
+warning: unused import: `ModelStorage`
+  --> crates/interstice-ml/src/training/mod.rs:23:16
+   |
+23 |     MLStorage, ModelStorage, TrainingStorage,
+   |                ^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` on by default
+
+warning: unused variable: `stats`
+   --> crates/interstice-ml/src/inference/edge.rs:555:48
+    |
+555 |     fn quantize_to_int8(&self, weights: &[u8], stats: &CalibrationStats) -> Result<Vec<u8>> {
+    |                                                ^^^^^ help: if this is intentional, prefix it with an underscore: `_stats`
+
+warning: unused variable: `stats`
+   --> crates/interstice-ml/src/inference/edge.rs:560:48
+    |
+560 |     fn quantize_to_int4(&self, weights: &[u8], stats: &CalibrationStats) -> Result<Vec<u8>> {
+    |                                                ^^^^^ help: if this is intentional, prefix it with an underscore: `_stats`
+
+warning: unused variable: `config`
+   --> crates/interstice-ml/src/inference/edge.rs:673:9
+    |
+673 |         config: &PruningConfig,
+    |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_config`
+
+warning: unused variable: `num_outcomes`
+   --> crates/interstice-ml/src/inference/mod.rs:620:50
+    |
+620 |     fn record_prediction(&self, latency_ms: f64, num_outcomes: usize) {
+    |                                                  ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_num_outcomes`
+
+warning: unused variable: `layer_idx`
+   --> crates/interstice-ml/src/models/mod.rs:240:41
+    |
+240 |     fn layer_norm(&self, input: Tensor, layer_idx: usize) -> Result<Tensor> {
+    |                                         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_layer_idx`
+
+warning: unused variable: `head_dim`
+   --> crates/interstice-ml/src/models/mod.rs:256:13
+    |
+256 |         let head_dim = hidden_size / num_heads;
+    |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_head_dim`
+
+warning: unused variable: `attention_mask`
+   --> crates/interstice-ml/src/models/mod.rs:250:9
+    |
+250 |         attention_mask: Option<&Tensor>,
+    |         ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_attention_mask`
+
+warning: unused variable: `layer_idx`
+   --> crates/interstice-ml/src/models/mod.rs:251:9
+    |
+251 |         layer_idx: usize,
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_layer_idx`
+
+warning: unused variable: `optimizer`
+   --> crates/interstice-ml/src/models/mod.rs:782:30
+    |
+782 |     fn clip_gradients(&self, optimizer: &impl Optimizer) -> Result<()> {
+    |                              ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_optimizer`
+
+warning: unused variable: `input`
+    --> crates/interstice-ml/src/models/mod.rs:1010:33
+     |
+1010 |    fn generate_reasoning(&self, input: &str, outcome: &str, confidence: f32) -> String {
+     |                                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_input`
+
+warning: unused variable: `model`
+   --> crates/interstice-ml/src/training/model_storage.rs:495:46
+    |
+495 |     async fn save(&self, workspace_id: Uuid, model: &OrgModel, metrics: &TrainingMetrics) -> Result<()> {
+    |                                              ^^^^^ help: if this is intentional, prefix it with an underscore: `_model`
+
+warning: unused variable: `metadata`
+   --> crates/interstice-ml/src/training/model_storage.rs:711:13
+    |
+711 |         let metadata = self.load_metadata(workspace_id, version).await?
+    |             ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_metadata`
+
+warning: unused variable: `model`
+   --> crates/interstice-ml/src/training/model_storage.rs:855:46
+    |
+855 |     async fn save(&self, workspace_id: Uuid, model: &OrgModel, metrics: &TrainingMetrics) -> Result<()> {
+    |                                              ^^^^^ help: if this is intentional, prefix it with an underscore: `_model`
+
+warning: method `record_prediction_failure` is never used
+   --> crates/interstice-ml/src/lib.rs:576:8
+    |
+556 | impl HealthMonitor {
+    | ------------------ method in this implementation
+...
+576 |     fn record_prediction_failure(&mut self) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: field `max_permits` is never read
+   --> crates/interstice-ml/src/adapters.rs:228:5
+    |
+226 | pub struct RateLimiter {
+    |            ----------- field in this struct
+227 |     permits: Arc<Mutex<usize>>,  // This will now use tokio::sync::Mutex
+228 |     max_permits: usize,
+    |     ^^^^^^^^^^^
+
+warning: constant `FALLBACK_MODEL_ID` is never used
+  --> crates/interstice-ml/src/embeddings/mod.rs:19:7
+   |
+19 | const FALLBACK_MODEL_ID: &str = "bert-base-uncased";
+   |       ^^^^^^^^^^^^^^^^^
+
+warning: constant `EMBEDDING_DIM` is never used
+  --> crates/interstice-ml/src/embeddings/mod.rs:20:7
+   |
+20 | const EMBEDDING_DIM: usize = 384; // MiniLM outputs 384d embeddings
+   |       ^^^^^^^^^^^^^
+
+warning: field `device` is never read
+  --> crates/interstice-ml/src/inference/mod.rs:68:5
+   |
+64 | pub struct OutcomePredictor {
+   |            ---------------- field in this struct
+...
+68 |     device: Device,
+   |     ^^^^^^
+
+warning: associated items `as_f32`, `from_score`, and `color` are never used
+  --> crates/interstice-ml/src/inference/engine.rs:58:12
+   |
+56 | impl ImpactLevel {
+   | ---------------- associated items in this implementation
+57 |     /// Get numeric value for calculations
+58 |     pub fn as_f32(&self) -> f32 {
+   |            ^^^^^^
+...
+69 |     pub fn from_score(score: f32) -> Self {
+   |            ^^^^^^^^^^
+...
+80 |     pub fn color(&self) -> &'static str {
+   |            ^^^^^
+
+warning: associated items `new`, `with_description`, `with_evidence`, `contribution`, and `evidence_strength` are never used
+   --> crates/interstice-ml/src/inference/engine.rs:116:12
+    |
+115 | impl ContributingFactor {
+    | ----------------------- associated items in this implementation
+116 |     pub fn new(name: impl Into<String>, weight: f32, category: FactorCategory) -> Self {
+    |            ^^^
+...
+128 |     pub fn with_description(mut self, desc: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^
+...
+133 |     pub fn with_evidence(mut self, evidence: Evidence) -> Self {
+    |            ^^^^^^^^^^^^^
+...
+139 |     pub fn contribution(&self) -> f32 {
+    |            ^^^^^^^^^^^^
+...
+143 |     fn evidence_strength(&self) -> f32 {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: associated items `new` and `with_differences` are never used
+   --> crates/interstice-ml/src/inference/engine.rs:185:12
+    |
+184 | impl AlternativeOutcome {
+    | ----------------------- associated items in this implementation
+185 |     pub fn new(
+    |            ^^^
+...
+199 |     pub fn with_differences(mut self, differences: Vec<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `with_confidence_factor`, `with_uncertainty_factor`, `with_assumption`, and `quality_score` are never used
+   --> crates/interstice-ml/src/inference/engine.rs:217:12
+    |
+216 | impl PredictionReasoning {
+    | ------------------------ associated items in this implementation
+217 |     pub fn new(summary: impl Into<String>) -> Self {
+    |            ^^^
+...
+228 |     pub fn with_confidence_factor(mut self, factor: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^
+...
+233 |     pub fn with_uncertainty_factor(mut self, factor: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^
+...
+238 |     pub fn with_assumption(mut self, assumption: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+244 |     pub fn quality_score(&self) -> f32 {
+    |            ^^^^^^^^^^^^^
+
+warning: field `cached_quality_score` is never read
+   --> crates/interstice-ml/src/inference/engine.rs:283:9
+    |
+271 | pub struct OutcomePrediction {
+    |            ----------------- field in this struct
+...
+283 |     pub cached_quality_score: Option<f32>,
+    |         ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `OutcomePrediction` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: multiple associated items are never used
+   --> crates/interstice-ml/src/inference/engine.rs:288:12
+    |
+286 | impl OutcomePrediction {
+    | ---------------------- associated items in this implementation
+287 |     /// Create a simple prediction
+288 |     pub fn simple(
+    |            ^^^^^^
+...
+310 |     pub fn builder(
+    |            ^^^^^^^
+...
+318 |     fn validate_confidence(confidence: f32) -> Result<f32> {
+    |        ^^^^^^^^^^^^^^^^^^^
+...
+326 |     pub fn is_confident(&self, threshold: f32) -> bool {
+    |            ^^^^^^^^^^^^
+...
+331 |     pub fn quality_score(&mut self) -> f32 {
+    |            ^^^^^^^^^^^^^
+...
+341 |     fn calculate_quality_score(&self) -> f32 {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+368 |     pub fn best_alternative(&self) -> Option<&AlternativeOutcome> {
+    |            ^^^^^^^^^^^^^^^^
+...
+378 |     pub fn uncertainty(&self) -> f32 {
+    |            ^^^^^^^^^^^
+...
+383 |     pub fn completion_estimate(&self) -> String {
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+399 |     pub fn merge(&mut self, other: &OutcomePrediction) -> Result<()> {
+    |            ^^^^^
+
+warning: method `completeness_score` is never used
+   --> crates/interstice-ml/src/inference/engine.rs:504:12
+    |
+503 | impl PredictionMetadata {
+    | ----------------------- method in this implementation
+504 |     pub fn completeness_score(&self) -> f32 {
+    |            ^^^^^^^^^^^^^^^^^^
+
+warning: struct `PredictionBuilder` is never constructed
+   --> crates/interstice-ml/src/inference/engine.rs:543:12
+    |
+543 | pub struct PredictionBuilder {
+    |            ^^^^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates/interstice-ml/src/inference/engine.rs:556:12
+    |
+555 | impl PredictionBuilder {
+    | ---------------------- associated items in this implementation
+556 |     pub fn new(outcome_id: impl Into<String>, outcome_name: impl Into<String>) -> Self {
+    |            ^^^
+...
+570 |     pub fn confidence(mut self, confidence: f32) -> Self {
+    |            ^^^^^^^^^^
+...
+575 |     pub fn reasoning(mut self, reasoning: PredictionReasoning) -> Self {
+    |            ^^^^^^^^^
+...
+580 |     pub fn add_factor(mut self, factor: ContributingFactor) -> Self {
+    |            ^^^^^^^^^^
+...
+585 |     pub fn add_alternative(mut self, alternative: AlternativeOutcome) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+590 |     pub fn impact(mut self, impact: ImpactLevel) -> Self {
+    |            ^^^^^^
+...
+595 |     pub fn completion_time(mut self, duration: Duration) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+600 |     pub fn add_tag(mut self, tag: impl Into<String>) -> Self {
+    |            ^^^^^^^
+...
+605 |     pub fn add_data_source(mut self, source: impl Into<String>) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+610 |     pub fn computation_time(mut self, ms: u64) -> Self {
+    |            ^^^^^^^^^^^^^^^^
+...
+615 |     pub fn confidence_interval(mut self, lower: f32, upper: f32) -> Self {
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+620 |     pub fn build(self) -> Result<OutcomePrediction> {
+    |            ^^^^^
+
+warning: struct `PredictionEnsemble` is never constructed
+   --> crates/interstice-ml/src/inference/engine.rs:912:12
+    |
+912 | pub struct PredictionEnsemble {
+    |            ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `PredictionEnsemble` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variants `WeightedAverage`, `MaxConfidence`, `Voting`, `BayesianCombination`, and `StackedGeneralization` are never constructed
+   --> crates/interstice-ml/src/inference/engine.rs:921:5
+    |
+920 | pub enum AggregationMethod {
+    |          ----------------- variants in this enum
+921 |     WeightedAverage,
+    |     ^^^^^^^^^^^^^^^
+922 |     MaxConfidence,
+    |     ^^^^^^^^^^^^^
+923 |     Voting,
+    |     ^^^^^^
+924 |     BayesianCombination,
+    |     ^^^^^^^^^^^^^^^^^^^
+925 |     StackedGeneralization,
+    |     ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `AggregationMethod` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: multiple associated items are never used
+    --> crates/interstice-ml/src/inference/engine.rs:929:12
+     |
+928  | impl PredictionEnsemble {
+     | ----------------------- associated items in this implementation
+929  |     pub fn new(aggregation_method: AggregationMethod) -> Self {
+     |            ^^^
+...
+938  |     pub fn add_prediction(&mut self, prediction: OutcomePrediction, weight: f32) {
+     |            ^^^^^^^^^^^^^^
+...
+943  |     pub fn set_threshold(&mut self, threshold: f32) {
+     |            ^^^^^^^^^^^^^
+...
+948  |     pub fn aggregate(&self) -> Result<OutcomePrediction> {
+     |            ^^^^^^^^^
+...
+964  |     fn weighted_average(&self) -> Result<OutcomePrediction> {
+     |        ^^^^^^^^^^^^^^^^
+...
+1021 |     fn max_confidence(&self) -> Result<OutcomePrediction> {
+     |        ^^^^^^^^^^^^^^
+...
+1031 |     fn voting(&self) -> Result<OutcomePrediction> {
+     |        ^^^^^^
+...
+1056 |     fn bayesian_combination(&self) -> Result<OutcomePrediction> {
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+1094 |     fn stacked_generalization(&self) -> Result<OutcomePrediction> {
+     |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `PredictionHistory` is never constructed
+    --> crates/interstice-ml/src/inference/engine.rs:1121:12
+     |
+1121 | pub struct PredictionHistory {
+     |            ^^^^^^^^^^^^^^^^^
+     |
+     = note: `PredictionHistory` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: multiple associated items are never used
+    --> crates/interstice-ml/src/inference/engine.rs:1144:12
+     |
+1143 | impl PredictionHistory {
+     | ---------------------- associated items in this implementation
+1144 |     pub fn new(max_size: usize) -> Self {
+     |            ^^^
+...
+1151 |     pub fn add(&self, prediction: OutcomePrediction) {
+     |            ^^^
+...
+1168 |     pub fn update_outcome(&self, prediction_id: &str, actual_outcome: String, accuracy: f32) {
+     |            ^^^^^^^^^^^^^^
+...
+1179 |     pub fn add_feedback(&self, prediction_id: &str, feedback: PredictionFeedback) {
+     |            ^^^^^^^^^^^^
+...
+1189 |     pub fn calculate_accuracy(&self) -> f32 {
+     |            ^^^^^^^^^^^^^^^^^^
+...
+1203 |     pub fn get_recent(&self, count: usize) -> Vec<HistoricalPrediction> {
+     |            ^^^^^^^^^^
+...
+1214 |     pub fn get_by_outcome(&self, outcome_id: &str) -> Vec<HistoricalPrediction> {
+     |            ^^^^^^^^^^^^^^
+
+warning: field `rules` is never read
+    --> crates/interstice-ml/src/inference/engine.rs:1225:5
+     |
+1224 | pub struct PredictionValidator {
+     |            ------------------- field in this struct
+1225 |     rules: Vec<Box<dyn ValidationRule>>,
+     |     ^^^^^
+
+warning: methods `add_rule` and `validate` are never used
+    --> crates/interstice-ml/src/inference/engine.rs:1240:12
+     |
+1228 | impl PredictionValidator {
+     | ------------------------ methods in this implementation
+...
+1240 |     pub fn add_rule(&mut self, rule: Box<dyn ValidationRule>) {
+     |            ^^^^^^^^
+...
+1244 |     pub fn validate(&self, prediction: &OutcomePrediction) -> ValidationResult {
+     |            ^^^^^^^^
+
+warning: field `0` is never read
+    --> crates/interstice-ml/src/inference/engine.rs:1275:13
+     |
+1275 |     Invalid(String),
+     |     ------- ^^^^^^
+     |     |
+     |     field in this variant
+     |
+     = note: `ValidationResult` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+     |
+1275 -     Invalid(String),
+1275 +     Invalid(()),
+     |
+
+warning: field `0` is never read
+    --> crates/interstice-ml/src/inference/engine.rs:1276:13
+     |
+1276 |     Warning(String),
+     |     ------- ^^^^^^
+     |     |
+     |     field in this variant
+     |
+     = note: `ValidationResult` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+     |
+1276 -     Warning(String),
+1276 +     Warning(()),
+     |
+
+warning: method `validate` is never used
+    --> crates/interstice-ml/src/inference/engine.rs:1280:8
+     |
+1279 | pub trait ValidationRule: Send + Sync {
+     |           -------------- method in this trait
+1280 |     fn validate(&self, prediction: &OutcomePrediction) -> ValidationResult;
+     |        ^^^^^^^^
+
+warning: struct `PredictionMonitor` is never constructed
+    --> crates/interstice-ml/src/inference/engine.rs:1359:12
+     |
+1359 | pub struct PredictionMonitor {
+     |            ^^^^^^^^^^^^^^^^^
+     |
+     = note: `PredictionMonitor` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `total_predictions`, `avg_confidence`, `avg_quality_score`, `avg_computation_time_ms`, `error_rate`, and `cache_hit_rate` are never read
+    --> crates/interstice-ml/src/inference/engine.rs:1367:9
+     |
+1366 | pub struct PredictionMetrics {
+     |            ----------------- fields in this struct
+1367 |     pub total_predictions: u64,
+     |         ^^^^^^^^^^^^^^^^^
+1368 |     pub avg_confidence: f32,
+     |         ^^^^^^^^^^^^^^
+1369 |     pub avg_quality_score: f32,
+     |         ^^^^^^^^^^^^^^^^^
+1370 |     pub avg_computation_time_ms: f64,
+     |         ^^^^^^^^^^^^^^^^^^^^^^^
+1371 |     pub error_rate: f32,
+     |         ^^^^^^^^^^
+1372 |     pub cache_hit_rate: f32,
+     |         ^^^^^^^^^^^^^^
+     |
+     = note: `PredictionMetrics` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `PerformanceAlert` is never constructed
+    --> crates/interstice-ml/src/inference/engine.rs:1376:12
+     |
+1376 | pub struct PerformanceAlert {
+     |            ^^^^^^^^^^^^^^^^
+     |
+     = note: `PerformanceAlert` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: variants `Info`, `Warning`, `Error`, and `Critical` are never constructed
+    --> crates/interstice-ml/src/inference/engine.rs:1385:5
+     |
+1384 | pub enum AlertSeverity {
+     |          ------------- variants in this enum
+1385 |     Info,
+     |     ^^^^
+1386 |     Warning,
+     |     ^^^^^^^
+1387 |     Error,
+     |     ^^^^^
+1388 |     Critical,
+     |     ^^^^^^^^
+     |
+     = note: `AlertSeverity` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `min_confidence`, `max_computation_time_ms`, `max_error_rate`, and `min_cache_hit_rate` are never read
+    --> crates/interstice-ml/src/inference/engine.rs:1393:9
+     |
+1392 | pub struct MonitorThresholds {
+     |            ----------------- fields in this struct
+1393 |     pub min_confidence: f32,
+     |         ^^^^^^^^^^^^^^
+1394 |     pub max_computation_time_ms: u64,
+     |         ^^^^^^^^^^^^^^^^^^^^^^^
+1395 |     pub max_error_rate: f32,
+     |         ^^^^^^^^^^^^^^
+1396 |     pub min_cache_hit_rate: f32,
+     |         ^^^^^^^^^^^^^^^^^^
+     |
+     = note: `MonitorThresholds` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: multiple associated items are never used
+    --> crates/interstice-ml/src/inference/engine.rs:1411:12
+     |
+1410 | impl PredictionMonitor {
+     | ---------------------- associated items in this implementation
+1411 |     pub fn new(thresholds: MonitorThresholds) -> Self {
+     |            ^^^
+...
+1419 |     pub fn record_prediction(&self, prediction: &OutcomePrediction, computation_time_ms: u64) {
+     |            ^^^^^^^^^^^^^^^^^
+...
+1439 |     pub fn record_error(&self) {
+     |            ^^^^^^^^^^^^
+...
+1447 |     pub fn record_cache_hit(&self, hit: bool) {
+     |            ^^^^^^^^^^^^^^^^
+...
+1456 |     fn check_thresholds(&self) {
+     |        ^^^^^^^^^^^^^^^^
+...
+1505 |     pub fn get_metrics(&self) -> PredictionMetrics {
+     |            ^^^^^^^^^^^
+...
+1509 |     pub fn get_alerts(&self) -> Vec<PerformanceAlert> {
+     |            ^^^^^^^^^^
+
+warning: struct `Node` is never constructed
+  --> crates/interstice-ml/src/inference/cache.rs:67:8
+   |
+67 | struct Node<K> {
+   |        ^^^^
+
+warning: field `config` is never read
+   --> crates/interstice-ml/src/inference/cache.rs:625:5
+    |
+624 | pub struct CacheBuilder {
+    |            ------------ field in this struct
+625 |     config: CacheConfig,
+    |     ^^^^^^
+
+warning: methods `capacity`, `default_ttl`, `auto_cleanup`, `with_statistics`, `initial_capacity`, and `build` are never used
+   --> crates/interstice-ml/src/inference/cache.rs:635:12
+    |
+628 | impl CacheBuilder {
+    | ----------------- methods in this implementation
+...
+635 |     pub fn capacity(mut self, capacity: usize) -> Self {
+    |            ^^^^^^^^
+...
+640 |     pub fn default_ttl(mut self, ttl: Duration) -> Self {
+    |            ^^^^^^^^^^^
+...
+645 |     pub fn auto_cleanup(mut self, interval: Duration) -> Self {
+    |            ^^^^^^^^^^^^
+...
+651 |     pub fn with_statistics(mut self) -> Self {
+    |            ^^^^^^^^^^^^^^^
+...
+656 |     pub fn initial_capacity(mut self, capacity: usize) -> Self {
+    |            ^^^^^^^^^^^^^^^^
+...
+661 |     pub fn build<K, V>(self) -> Result<ConcurrentLRUCache<K, V>, CacheError>
+    |            ^^^^^
+
+warning: multiple variants are never constructed
+  --> crates/interstice-ml/src/inference/edge.rs:16:5
+   |
+14 | pub enum EdgeError {
+   |          --------- variants in this enum
+15 |     #[error("Platform {0} not supported")]
+16 |     UnsupportedPlatform(String),
+   |     ^^^^^^^^^^^^^^^^^^^
+...
+19 |     OptimizationError(String),
+   |     ^^^^^^^^^^^^^^^^^
+...
+22 |     DeploymentError { platform: String, reason: String },
+   |     ^^^^^^^^^^^^^^^
+...
+25 |     CompilationError(String),
+   |     ^^^^^^^^^^^^^^^^
+...
+28 |     ResourceLimitExceeded(String),
+   |     ^^^^^^^^^^^^^^^^^^^^^
+...
+31 |     ValidationError(String),
+   |     ^^^^^^^^^^^^^^^
+...
+34 |     NetworkError(String),
+   |     ^^^^^^^^^^^^
+...
+37 |     SerializationError(String),
+   |     ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `EdgeError` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: struct `WasmModule` is never constructed
+  --> crates/interstice-ml/src/inference/edge.rs:61:8
+   |
+61 | struct WasmModule {
+   |        ^^^^^^^^^^
+
+warning: struct `WorkerBundle` is never constructed
+  --> crates/interstice-ml/src/inference/edge.rs:68:8
+   |
+68 | struct WorkerBundle {
+   |        ^^^^^^^^^^^^
+
+warning: struct `VSCodePackage` is never constructed
+  --> crates/interstice-ml/src/inference/edge.rs:75:8
+   |
+75 | struct VSCodePackage {
+   |        ^^^^^^^^^^^^^
+
+warning: struct `ExtensionManifest` is never constructed
+  --> crates/interstice-ml/src/inference/edge.rs:82:8
+   |
+82 | struct ExtensionManifest {
+   |        ^^^^^^^^^^^^^^^^^
+   |
+   = note: `ExtensionManifest` has a derived impl for the trait `Default`, but this is intentionally ignored during dead code analysis
+
+warning: struct `CompiledModel` is never constructed
+  --> crates/interstice-ml/src/inference/edge.rs:89:8
+   |
+89 | struct CompiledModel {
+   |        ^^^^^^^^^^^^^
+
+warning: enum `ModelFormat` is never used
+  --> crates/interstice-ml/src/inference/edge.rs:96:6
+   |
+96 | enum ModelFormat {
+   |      ^^^^^^^^^^^
+
+warning: struct `ModelCompiler` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:103:8
+    |
+103 | struct ModelCompiler;
+    |        ^^^^^^^^^^^^^
+
+warning: associated items `new`, `compile_to_wasm`, `compile_to_worker`, `compile_to_coreml`, `compile_to_tflite`, and `compile_standard` are never used
+   --> crates/interstice-ml/src/inference/edge.rs:106:8
+    |
+105 | impl ModelCompiler {
+    | ------------------ associated items in this implementation
+106 |     fn new() -> Self {
+    |        ^^^
+...
+110 |     async fn compile_to_wasm(&self, _model: OptimizedModel) -> Result<WasmModule> {
+    |              ^^^^^^^^^^^^^^^
+...
+118 |     async fn compile_to_worker(&self, _model: OptimizedModel) -> Result<WorkerBundle> {
+    |              ^^^^^^^^^^^^^^^^^
+...
+130 |     async fn compile_to_coreml(&self, _model: OptimizedModel) -> Result<CompiledModel> {
+    |              ^^^^^^^^^^^^^^^^^
+...
+138 |     async fn compile_to_tflite(&self, _model: OptimizedModel) -> Result<CompiledModel> {
+    |              ^^^^^^^^^^^^^^^^^
+...
+146 |     async fn compile_standard(&self, _model: OptimizedModel) -> Result<CompiledModel> {
+    |              ^^^^^^^^^^^^^^^^
+
+warning: struct `EdgeDeployer` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:155:8
+    |
+155 | struct EdgeDeployer;
+    |        ^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates/interstice-ml/src/inference/edge.rs:158:8
+    |
+157 | impl EdgeDeployer {
+    | ----------------- associated items in this implementation
+158 |     fn new() -> Self {
+    |        ^^^
+...
+162 |     async fn deploy_vscode(&self, _package: VSCodePackage) -> Result<String> {
+    |              ^^^^^^^^^^^^^
+...
+166 |     async fn deploy_to_edge_workers(&self, _model: OptimizedModel, provider: &str) -> Result<String> {
+    |              ^^^^^^^^^^^^^^^^^^^^^^
+...
+170 |     async fn deploy_cloudflare(&self, _bundle: WorkerBundle) -> Result<String> {
+    |              ^^^^^^^^^^^^^^^^^
+...
+174 |     async fn deploy_mobile(&self, _model: CompiledModel, platform: MobilePlatform) -> Result<String> {
+    |              ^^^^^^^^^^^^^
+...
+178 |     async fn deploy_standard(&self, _model: CompiledModel, platform: Platform) -> Result<String> {
+    |              ^^^^^^^^^^^^^^^
+...
+182 |     async fn undeploy(&self, _model: &EdgeModel) -> Result<()> {
+    |              ^^^^^^^^
+...
+186 |     async fn rollback(&self, _model: &EdgeModel) -> Result<()> {
+    |              ^^^^^^^^
+
+warning: struct `EdgeMonitor` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:191:8
+    |
+191 | struct EdgeMonitor;
+    |        ^^^^^^^^^^^
+
+warning: associated items `new`, `start_monitoring`, `stop_monitoring`, and `check_health` are never used
+   --> crates/interstice-ml/src/inference/edge.rs:194:8
+    |
+193 | impl EdgeMonitor {
+    | ---------------- associated items in this implementation
+194 |     fn new() -> Self {
+    |        ^^^
+...
+198 |     async fn start_monitoring(&self, _model: &EdgeModel) -> Result<()> {
+    |              ^^^^^^^^^^^^^^^^
+...
+202 |     async fn stop_monitoring(&self, _model: &EdgeModel) -> Result<()> {
+    |              ^^^^^^^^^^^^^^^
+...
+206 |     async fn check_health(&self, _model: &EdgeModel) -> Result<HealthStatus> {
+    |              ^^^^^^^^^^^^
+
+warning: struct `HealthStatus` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:216:8
+    |
+216 | struct HealthStatus {
+    |        ^^^^^^^^^^^^
+
+warning: struct `OrganizationModel` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:316:12
+    |
+316 | pub struct OrganizationModel {
+    |            ^^^^^^^^^^^^^^^^^
+    |
+    = note: `OrganizationModel` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `Weights` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:355:12
+    |
+355 | pub struct Weights {
+    |            ^^^^^^^
+    |
+    = note: `Weights` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `OptimizedModel` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:378:12
+    |
+378 | pub struct OptimizedModel {
+    |            ^^^^^^^^^^^^^^
+    |
+    = note: `OptimizedModel` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `EdgeModel` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:397:12
+    |
+397 | pub struct EdgeModel {
+    |            ^^^^^^^^^
+    |
+    = note: `EdgeModel` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: struct `ModelQuantizer` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:440:12
+    |
+440 | pub struct ModelQuantizer {
+    |            ^^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates/interstice-ml/src/inference/edge.rs:446:12
+    |
+445 | impl ModelQuantizer {
+    | ------------------- associated items in this implementation
+446 |     pub fn new() -> Self {
+    |            ^^^
+...
+454 |     pub async fn quantize(
+    |                  ^^^^^^^^
+...
+507 |     fn validate_for_quantization(&self, model: &OrganizationModel) -> Result<()> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+521 |     fn requires_calibration(&self, config: &QuantizationConfig) -> bool {
+    |        ^^^^^^^^^^^^^^^^^^^^
+...
+525 |     async fn collect_calibration_stats(
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+539 |     async fn quantize_weights(
+    |              ^^^^^^^^^^^^^^^^
+...
+555 |     fn quantize_to_int8(&self, weights: &[u8], stats: &CalibrationStats) -> Result<Vec<u8>> {
+    |        ^^^^^^^^^^^^^^^^
+...
+560 |     fn quantize_to_int4(&self, weights: &[u8], stats: &CalibrationStats) -> Result<Vec<u8>> {
+    |        ^^^^^^^^^^^^^^^^
+...
+565 |     fn quantize_to_fp16(&self, weights: &[u8]) -> Result<Vec<u8>> {
+    |        ^^^^^^^^^^^^^^^^
+...
+570 |     async fn validate_accuracy(
+    |              ^^^^^^^^^^^^^^^^^
+...
+579 |     fn calculate_model_size(&self, model: &OrganizationModel) -> usize {
+    |        ^^^^^^^^^^^^^^^^^^^^
+...
+583 |     fn estimate_speedup(&self, config: &QuantizationConfig) -> f32 {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: struct `CalibrationStats` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:594:8
+    |
+594 | struct CalibrationStats {
+    |        ^^^^^^^^^^^^^^^^
+    |
+    = note: `CalibrationStats` has a derived impl for the trait `Default`, but this is intentionally ignored during dead code analysis
+
+warning: struct `ModelPruner` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:601:12
+    |
+601 | pub struct ModelPruner {
+    |            ^^^^^^^^^^^
+
+warning: multiple associated items are never used
+   --> crates/interstice-ml/src/inference/edge.rs:607:12
+    |
+606 | impl ModelPruner {
+    | ---------------- associated items in this implementation
+607 |     pub fn new() -> Self {
+    |            ^^^
+...
+615 |     pub async fn prune(
+    |                  ^^^^^
+...
+669 |     fn create_pruning_mask(
+    |        ^^^^^^^^^^^^^^^^^^^
+...
+686 |     async fn apply_pruning(
+    |              ^^^^^^^^^^^^^
+...
+698 |     async fn iterative_pruning(
+    |              ^^^^^^^^^^^^^^^^^
+...
+707 |     fn calculate_size_reduction(&self, original: &OptimizedModel, pruned: &[u8]) -> f32 {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+712 |     fn estimate_pruning_speedup(&self, config: &PruningConfig) -> f32 {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `ImportanceCalculator` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:721:8
+    |
+721 | struct ImportanceCalculator {
+    |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `new`, `calculate`, `l1_norm_importance`, `l2_norm_importance`, `gradient_importance`, and `taylor_importance` are never used
+   --> crates/interstice-ml/src/inference/edge.rs:726:8
+    |
+725 | impl ImportanceCalculator {
+    | ------------------------- associated items in this implementation
+726 |     fn new() -> Self {
+    |        ^^^
+...
+732 |     async fn calculate(
+    |              ^^^^^^^^^
+...
+757 |     fn l1_norm_importance(&self, weights: &Weights) -> Vec<f32> {
+    |        ^^^^^^^^^^^^^^^^^^
+...
+761 |     fn l2_norm_importance(&self, weights: &Weights) -> Vec<f32> {
+    |        ^^^^^^^^^^^^^^^^^^
+...
+765 |     async fn gradient_importance(&self, model: &OptimizedModel) -> Result<Vec<f32>> {
+    |              ^^^^^^^^^^^^^^^^^^^
+...
+770 |     async fn taylor_importance(&self, model: &OptimizedModel) -> Result<Vec<f32>> {
+    |              ^^^^^^^^^^^^^^^^^
+
+warning: struct `Profiler` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:776:8
+    |
+776 | struct Profiler {
+    |        ^^^^^^^^
+
+warning: associated items `new` and `start_timer` are never used
+   --> crates/interstice-ml/src/inference/edge.rs:781:8
+    |
+780 | impl Profiler {
+    | ------------- associated items in this implementation
+781 |     fn new() -> Self {
+    |        ^^^
+...
+787 |     fn start_timer(&self, name: &str) -> ProfileTimer {
+    |        ^^^^^^^^^^^
+
+warning: struct `ProfileTimer` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:796:8
+    |
+796 | struct ProfileTimer {
+    |        ^^^^^^^^^^^^
+
+warning: struct `ProfileMetrics` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:814:8
+    |
+814 | struct ProfileMetrics {
+    |        ^^^^^^^^^^^^^^
+    |
+    = note: `ProfileMetrics` has a derived impl for the trait `Default`, but this is intentionally ignored during dead code analysis
+
+warning: struct `EdgeInference` is never constructed
+   --> crates/interstice-ml/src/inference/edge.rs:821:12
+    |
+821 | pub struct EdgeInference {
+    |            ^^^^^^^^^^^^^
+
+warning: multiple associated items are never used
+    --> crates/interstice-ml/src/inference/edge.rs:855:12
+     |
+854  | impl EdgeInference {
+     | ------------------ associated items in this implementation
+855  |     pub fn new(config: EdgeInferenceConfig) -> Self {
+     |            ^^^
+...
+868  |     pub async fn deploy_to_platform(
+     |                  ^^^^^^^^^^^^^^^^^^
+...
+909  |     async fn optimize_for_edge(
+     |              ^^^^^^^^^^^^^^^^^
+...
+941  |     fn get_platform_configs(&self, platform: &Platform) -> 
+     |        ^^^^^^^^^^^^^^^^^^^^
+...
+995  |     async fn distill(
+     |              ^^^^^^^
+...
+1037 |     async fn simulate_distillation(
+     |              ^^^^^^^^^^^^^^^^^^^^^
+...
+1048 |     async fn apply_graph_optimizations(&self, model: OptimizedModel) -> Result<OptimizedModel> {
+     |              ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1064 |     async fn deploy_vscode_model(&self, model: OptimizedModel) -> Result<EdgeModel> {
+     |              ^^^^^^^^^^^^^^^^^^^
+...
+1088 |     async fn deploy_slack_model(&self, model: OptimizedModel) -> Result<EdgeModel> {
+     |              ^^^^^^^^^^^^^^^^^^
+...
+1112 |     async fn deploy_cloudflare_model(&self, model: OptimizedModel) -> Result<EdgeModel> {
+     |              ^^^^^^^^^^^^^^^^^^^^^^^
+...
+1138 |     async fn deploy_mobile_model(
+     |              ^^^^^^^^^^^^^^^^^^^
+...
+1172 |     async fn deploy_standard(
+     |              ^^^^^^^^^^^^^^^
+...
+1195 |     async fn package_vscode_extension(&self, wasm_module: WasmModule) -> Result<VSCodePackage> {
+     |              ^^^^^^^^^^^^^^^^^^^^^^^^
+...
+1203 |     async fn optimize_for_slack(&self, model: OptimizedModel) -> Result<OptimizedModel> {
+     |              ^^^^^^^^^^^^^^^^^^
+...
+1208 |     fn validate_platform(&self, platform: &Platform) -> Result<()> {
+     |        ^^^^^^^^^^^^^^^^^
+...
+1218 |     pub async fn update_model(
+     |                  ^^^^^^^^^^^^
+...
+1239 |     async fn canary_deploy(
+     |              ^^^^^^^^^^^^^
+...
+1254 |     async fn verify_deployment(&self, edge_model: &EdgeModel) -> Result<()> {
+     |              ^^^^^^^^^^^^^^^^^
+...
+1272 |     async fn rollback(&self, edge_model: &EdgeModel) -> Result<()> {
+     |              ^^^^^^^^
+...
+1277 |     pub fn get_model(&self, platform: &Platform) -> Option<EdgeModel> {
+     |            ^^^^^^^^^
+...
+1281 |     pub fn list_deployments(&self) -> Vec<(Platform, EdgeModel)> {
+     |            ^^^^^^^^^^^^^^^^
+...
+1288 |     pub async fn remove_deployment(&mut self, platform: Platform) -> Result<()> {
+     |                  ^^^^^^^^^^^^^^^^^
+...
+1296 |     pub async fn get_metrics(&self, platform: &Platform) -> Option<EdgeMetrics> {
+     |                  ^^^^^^^^^^^
+
+warning: field `dropout` is never read
+  --> crates/interstice-ml/src/models/mod.rs:95:5
+   |
+92 | struct LoRAAdapter {
+   |        ----------- field in this struct
+...
+95 |     dropout: f32,
+   |     ^^^^^^^
+   |
+   = note: `LoRAAdapter` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `best_validation_loss` and `best_epoch` are never read
+   --> crates/interstice-ml/src/models/mod.rs:323:5
+    |
+321 | struct TrainingHistory {
+    |        --------------- fields in this struct
+322 |     epochs: Vec<EpochMetrics>,
+323 |     best_validation_loss: f32,
+    |     ^^^^^^^^^^^^^^^^^^^^
+324 |     best_epoch: usize,
+    |     ^^^^^^^^^^
+    |
+    = note: `TrainingHistory` has derived impls for the traits `Default`, `Clone`, and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: fields `epoch`, `learning_rate`, and `duration` are never read
+   --> crates/interstice-ml/src/models/mod.rs:330:5
+    |
+329 | struct EpochMetrics {
+    |        ------------ fields in this struct
+330 |     epoch: usize,
+    |     ^^^^^
+...
+335 |     learning_rate: f32,
+    |     ^^^^^^^^^^^^^
+336 |     duration: std::time::Duration,
+    |     ^^^^^^^^
+    |
+    = note: `EpochMetrics` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: field `weight` is never read
+    --> crates/interstice-ml/src/models/mod.rs:1221:5
+     |
+1217 | struct ProcessedExample {
+     |        ---------------- field in this struct
+...
+1221 |     weight: f32,
+     |     ^^^^^^
+     |
+     = note: `ProcessedExample` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: fields `workspace_id`, `metrics`, `duration`, `examples_used`, and `model_saved` are never read
+   --> crates/interstice-ml/src/training/mod.rs:789:5
+    |
+788 | struct WorkspaceMetrics {
+    |        ---------------- fields in this struct
+789 |     workspace_id: Uuid,
+    |     ^^^^^^^^^^^^
+790 |     metrics: TrainingMetrics,
+    |     ^^^^^^^
+791 |     duration: Duration,
+    |     ^^^^^^^^
+792 |     examples_used: usize,
+    |     ^^^^^^^^^^^^^
+793 |     model_saved: bool,
+    |     ^^^^^^^^^^^
+    |
+    = note: `WorkspaceMetrics` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `model_versions` is never read
+  --> crates/interstice-ml/src/training/monitoring.rs:32:5
+   |
+19 | pub struct MetricsCollector {
+   |            ---------------- field in this struct
+...
+32 |     model_versions: IntGaugeVec,
+   |     ^^^^^^^^^^^^^^
+
+warning: unused `std::result::Result` that must be used
+   --> crates/interstice-ml/src/embeddings/mod.rs:132:9
+    |
+132 | /         tokenizer.with_truncation(Some(TruncationParams {
+133 | |             max_length: self.config.max_seq_length,
+134 | |             ..Default::default()
+135 | |         }));
+    | |___________^
+    |
+    = note: this `Result` may be an `Err` variant, which should be handled
+    = note: `#[warn(unused_must_use)]` on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+132 |         let _ = tokenizer.with_truncation(Some(TruncationParams {
+    |         +++++++
+
+warning: `interstice-ml` (lib) generated 103 warnings
+warning: unreachable pattern
+   --> crates/interstice-adapters/src/slack/mod.rs:298:13
+    |
+298 |             _ => {
+    |             ^ no value can reach this
+    |
+note: multiple earlier patterns match some of the same values
+   --> crates/interstice-adapters/src/slack/mod.rs:298:13
+    |
+276 |             SlackPushEvent::EventCallback(callback) => {
+    |             --------------------------------------- matches some of the same values
+...
+279 |             SlackPushEvent::UrlVerification(verification) => {
+    |             --------------------------------------------- matches some of the same values
+...
+294 |             SlackPushEvent::AppRateLimited(rate_limit) => {
+    |             ------------------------------------------ matches some of the same values
+...
+298 |             _ => {
+    |             ^ collectively making this unreachable
+    = note: `#[warn(unreachable_patterns)]` on by default
+
+warning: unused variable: `error`
+   --> crates/interstice-adapters/src/slack/mod.rs:267:27
+    |
+267 |     fn extract_rate_limit(error: &SlackClientError) -> Option<u64> {
+    |                           ^^^^^ help: if this is intentional, prefix it with an underscore: `_error`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: field `id` is never read
+   --> crates/interstice-adapters/src/lib.rs:824:5
+    |
+823 | pub struct EventSubscription {
+    |            ----------------- field in this struct
+824 |     id: Uuid,
+    |     ^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: fields `max_requests`, `window`, and `last_reset` are never read
+    --> crates/interstice-adapters/src/slack/mod.rs:1024:5
+     |
+1022 | struct RateLimiter {
+     |        ----------- fields in this struct
+1023 |     semaphore: Arc<Semaphore>,
+1024 |     max_requests: usize,
+     |     ^^^^^^^^^^^^
+1025 |     window: Duration,
+     |     ^^^^^^
+1026 |     last_reset: RwLock<Instant>,
+     |     ^^^^^^^^^^
+
+warning: method `acquire` is never used
+    --> crates/interstice-adapters/src/slack/mod.rs:1043:14
+     |
+1029 | impl RateLimiter {
+     | ---------------- method in this implementation
+...
+1043 |     async fn acquire(&self) -> Result<(), AdapterError> {
+     |              ^^^^^^^
+
+warning: field `config` is never read
+    --> crates/interstice-adapters/src/slack/mod.rs:1067:5
+     |
+1066 | struct SlackCache {
+     |        ---------- field in this struct
+1067 |     config: CacheConfig,
+     |     ^^^^^^
+
+warning: methods `get`, `set`, and `evict_expired` are never used
+    --> crates/interstice-adapters/src/slack/mod.rs:1079:8
+     |
+1071 | impl SlackCache {
+     | --------------- methods in this implementation
+...
+1079 |     fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
+     |        ^^^
+...
+1089 |     fn set<T: Serialize>(&self, key: String, value: T) {
+     |        ^^^
+...
+1107 |     fn evict_expired(&self) {
+     |        ^^^^^^^^^^^^^
+
+warning: fields `value` and `expires_at` are never read
+    --> crates/interstice-adapters/src/slack/mod.rs:1124:5
+     |
+1123 | struct CacheEntry {
+     |        ---------- fields in this struct
+1124 |     value: Value,
+     |     ^^^^^
+1125 |     expires_at: Instant,
+     |     ^^^^^^^^^^
+     |
+     = note: `CacheEntry` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: method `is_expired` is never used
+    --> crates/interstice-adapters/src/slack/mod.rs:1129:8
+     |
+1128 | impl CacheEntry {
+     | --------------- method in this implementation
+1129 |     fn is_expired(&self) -> bool {
+     |        ^^^^^^^^^^
+
+warning: `interstice-adapters` (lib) generated 9 warnings
+warning: field `timestamp` is never read
+   --> crates/interstice-api/src/middleware_layer/timeout.rs:406:5
+    |
+404 | struct DurationSample {
+    |        -------------- field in this struct
+405 |     duration: Duration,
+406 |     timestamp: Instant,
+    |     ^^^^^^^^^
+    |
+    = note: `DurationSample` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` on by default
+
+warning: `interstice-api` (bin "interstice-api") generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.81s
+     Running `target/debug/interstice-api`
+[2m2025-09-11T16:35:02.253098Z[0m [32m INFO[0m [2minterstice_api[0m[2m:[0m Tracing initialized
+[2m2025-09-11T16:35:02.253946Z[0m [32m INFO[0m [2minterstice_api[0m[2m:[0m Environment validation successful
+[2m2025-09-11T16:35:02.297940Z[0m [32m INFO[0m [2minterstice_api[0m[2m:[0m Database connection established
+[2m2025-09-11T16:35:02.299801Z[0m [32m INFO[0m [2msqlx::postgres::notice[0m[2m:[0m relation "_sqlx_migrations" already exists, skipping
+[2m2025-09-11T16:35:02.302554Z[0m [32m INFO[0m [2msqlx::postgres::notice[0m[2m:[0m relation "prediction_records" already exists, skipping
+[2m2025-09-11T16:35:02.303352Z[0m [33m WARN[0m [2minterstice_api[0m[2m:[0m Some tables already exist, migrations may have been applied previously
+[2m2025-09-11T16:35:02.352899Z[0m [32m INFO[0m [2minterstice_api[0m[2m:[0m Auth system initialized successfully
+[2m2025-09-11T16:35:02.353606Z[0m [32m INFO[0m [1mnew[0m[2m:[0m [2minterstice_ml[0m[2m:[0m Initializing ML Pipeline [3mversion[0m[2m=[0m"0.1.0" [3mml_engine[0m[2m=[0m"2.0.0"

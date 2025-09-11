@@ -596,7 +596,7 @@ pub fn create_tagged_metric(
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use crate::storage::{StorageBackend, WorkspaceStats, CleanupStats, ArtifactFilters};
+    use crate::storage::{ArtifactFilters, CleanupStats, PredictionFeedback, PredictionRecord, StorageBackend, WorkspaceStats};
     use crate::outcome::{Outcome, OutcomeFilters, OutcomeId};
     use crate::artifact::Artifact;
     use crate::types::SystemEvent;
@@ -721,6 +721,27 @@ mod tests {
                 timestamp: Utc::now(),
             })
         }
+
+        async fn store_prediction_record(&self, _record: PredictionRecord) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn query_predictions(&self, _since: DateTime<Utc>, _limit: usize) -> Result<Vec<PredictionRecord>, CoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn store_prediction_feedback(&self, _feedback: PredictionFeedback) -> Result<(), CoreError> {
+            Ok(())
+        }
+
+        async fn get_prediction_feedback(&self, _prediction_id: Uuid) -> Result<Vec<PredictionFeedback>, CoreError> {
+            Ok(Vec::new())
+        }
+
+        async fn get_prediction_record(&self, _id: Uuid) -> Result<Option<PredictionRecord>, CoreError> {
+            Ok(None)
+        }
+
     }
     
     #[tokio::test]

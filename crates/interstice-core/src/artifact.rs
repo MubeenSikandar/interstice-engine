@@ -448,6 +448,58 @@ pub enum ArtifactType {
     },
 }
 
+impl MeetingType {
+   pub fn name(&self) -> &str {
+        match self {
+            Self::Standup => "standup",
+            Self::Planning => "planning",
+            Self::Review => "review",
+            Self::Retrospective => "retrospective",
+            Self::OneOnOne => "1:1",
+            Self::AllHands => "all-hands",
+            Self::Interview => "interview",
+            Self::Training => "training",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Environment {
+   pub fn name(&self) -> &str {
+        match self {
+            Self::Development => "development",
+            Self::Staging => "staging",
+            Self::Production => "production",
+            Self::Testing => "testing",
+            Self::Preview => "preview",
+            Self::Custom(s) => s,
+        }
+    }
+}
+
+impl DeploymentStrategy {
+   pub fn name(&self) -> &str {
+        match self {
+            Self::BlueGreen => "blue-green",
+            Self::Canary => "canary",
+            Self::RollingUpdate => "rolling-update",
+            Self::Recreate => "recreate",
+            Self::Shadow => "shadow",
+        }
+    }
+}
+
+impl Severity {
+   pub fn to_artifact_severity(&self) -> crate::types::Priority {
+        match self {
+            Self::Critical => crate::types::Priority::Critical,
+            Self::High => crate::types::Priority::High,
+            Self::Medium => crate::types::Priority::Medium,
+            Self::Low | Self::Info => crate::types::Priority::Low,
+        }
+    }
+}
+
 // Enums for better type safety
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PullRequestState {
@@ -472,6 +524,17 @@ pub enum Priority {
     High,
     Medium,
     Low,
+}
+
+impl Priority {
+    pub fn to_types_priority(&self) -> crate::types::Priority {
+        match self {
+            Self::Critical => crate::types::Priority::Critical,
+            Self::High => crate::types::Priority::High,
+            Self::Medium => crate::types::Priority::Medium,
+            Self::Low => crate::types::Priority::Low,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2206,6 +2269,20 @@ pub struct ArtifactQuery {
     pub offset: Option<usize>,
     pub sort_by: SortField,
     pub sort_order: SortOrder,
+}
+
+impl ArtifactQuery {
+    /// Convert ArtifactQuery to ArtifactFilters for storage queries
+    pub fn to_filters(&self) -> crate::storage::ArtifactFilters {
+        crate::storage::ArtifactFilters {
+            platforms: self.platforms.clone(),
+            artifact_types: self.artifact_types.clone(),
+            created_after: self.created_after,
+            created_before: self.created_before,
+            has_outcome: None, // ArtifactQuery doesn't have this field
+            tags: self.tags.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

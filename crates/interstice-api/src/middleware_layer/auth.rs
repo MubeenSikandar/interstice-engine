@@ -177,10 +177,10 @@ impl RateLimiter {
         }
     }
     
-    pub async fn reset(&self, key: &str) {
-        let mut requests = self.requests.write().await;
-        requests.remove(key);
-    }
+    // pub async fn reset(&self, key: &str) {
+    //     let mut requests = self.requests.write().await;
+    //     requests.remove(key);
+    // }
 }
 
 // Global rate limiter instances

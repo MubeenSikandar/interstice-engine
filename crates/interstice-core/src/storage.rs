@@ -13,8 +13,10 @@ use serde_json::Value as JsonValue;
 use sqlx::{postgres::PgPoolOptions, PgPool, Postgres, Row};
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tracing::{debug, error, instrument, warn};
+use tracing::{debug, error, info, instrument};
 use uuid::Uuid;
+use num_traits::cast::ToPrimitive;
+use std::str::FromStr;
 
 use crate::analytics::{MetricEvent, MetricQuery};
 use crate::artifact::Artifact;
@@ -23,6 +25,7 @@ use crate::outcome::{Outcome, OutcomeFilters, OutcomeId};
 use crate::types::{
     Platform, UserId, WorkspaceId, SystemEvent
 };
+use crate::OutcomePrediction;
 
 /// Storage-specific error types
 #[derive(Error, Debug)]
@@ -107,6 +110,13 @@ pub trait StorageBackend: Send + Sync {
     async fn get_workspace_stats(&self, workspace_id: WorkspaceId) -> Result<WorkspaceStats, CoreError>;
     async fn health_check(&self) -> Result<bool, CoreError>;
     async fn cleanup_expired_data(&self) -> Result<CleanupStats, CoreError>;
+
+    // Prediction operations
+    async fn store_prediction_record(&self, record: PredictionRecord) -> Result<(), CoreError>;
+    async fn get_prediction_record(&self, id: Uuid) -> Result<Option<PredictionRecord>, CoreError>;
+    async fn query_predictions(&self, since: DateTime<Utc>, limit: usize) -> Result<Vec<PredictionRecord>, CoreError>;
+    async fn store_prediction_feedback(&self, feedback: PredictionFeedback) -> Result<(), CoreError>;
+    async fn get_prediction_feedback(&self, prediction_id: Uuid) -> Result<Vec<PredictionFeedback>, CoreError>;
 }
 
 /// PostgreSQL storage implementation
@@ -141,24 +151,25 @@ impl PostgresStorage {
             config,
         })
     }
-    
-    /// Execute query with retry logic
-    async fn execute_with_retry<F>(&self, operation: F) -> Result<sqlx::postgres::PgQueryResult, StorageError>
+
+    async fn execute_in_tx_with_retry<'a, F>(
+        &self,
+        tx: &mut sqlx::Transaction<'a, Postgres>,
+        query_factory: F,
+    ) -> Result<sqlx::postgres::PgQueryResult, StorageError>
     where
-        F: Fn() -> sqlx::query::Query<'static, Postgres, sqlx::postgres::PgArguments>,
+        F: Fn() -> sqlx::query::Query<'a, Postgres, sqlx::postgres::PgArguments>,
     {
         let mut attempts = 0;
-        let max_attempts = self.config.retry_attempts;
-        
         loop {
-            match operation().execute(&self.pool).await {
+            let query = query_factory();
+            match query.execute(&mut **tx).await {
                 Ok(result) => return Ok(result),
-                Err(e) if attempts < max_attempts && Self::is_retryable_error(&e) => {
+                Err(e) if attempts < self.config.retry_attempts && Self::is_retryable_error(&e) => {
                     attempts += 1;
                     let delay = std::time::Duration::from_millis(
                         self.config.retry_delay_ms * (2_u64.pow(attempts as u32))
                     );
-                    warn!("Retrying operation after {:?}, attempt {}/{}", delay, attempts, max_attempts);
                     tokio::time::sleep(delay).await;
                 }
                 Err(e) => return Err(StorageError::DatabaseError(e)),
@@ -597,10 +608,18 @@ impl StorageBackend for PostgresStorage {
         .await
         .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         
+        // Update cache after successful storage
+        self.cache.write().await.store_artifact(artifact.clone());
+        
         Ok(artifact.id)
     }
     
     async fn get_artifact(&self, id: Uuid) -> Result<Option<Artifact>, CoreError> {
+        // Check cache first
+        if let Some(artifact) = self.cache.read().await.get_artifact(id) {
+            return Ok(Some(artifact));
+        }
+        
         let row = sqlx::query!(
             "SELECT * FROM artifacts WHERE id = $1",
             id
@@ -610,7 +629,7 @@ impl StorageBackend for PostgresStorage {
         .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
         
         if let Some(row) = row {
-            Ok(Some(Artifact {
+            let artifact = Artifact {
                 id: row.id,
                 workspace_id: WorkspaceId::from_uuid(row.workspace_id.unwrap()),
                 artifact_type: serde_json::from_str(&row.artifact_type)?,
@@ -624,7 +643,12 @@ impl StorageBackend for PostgresStorage {
                 quality_metrics: crate::artifact::QualityMetrics::default(),
                 related_artifacts: Vec::new(),
                 tags: std::collections::HashSet::new(),
-            }))
+            };
+            
+            // Update cache
+            self.cache.write().await.store_artifact(artifact.clone());
+            
+            Ok(Some(artifact))
         } else {
             Ok(None)
         }
@@ -696,6 +720,9 @@ impl StorageBackend for PostgresStorage {
         .execute(&self.pool)
         .await
         .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        
+        // Invalidate cache
+        self.cache.write().await.invalidate_artifact(id);
         
         Ok(())
     }
@@ -910,13 +937,363 @@ impl StorageBackend for PostgresStorage {
             events_deleted,
             timestamp: Utc::now(),
         })
+    }#[instrument(skip(self, record))]
+    async fn store_prediction_record(&self, record: PredictionRecord) -> Result<(), CoreError> {
+        let mut tx = self.pool.begin().await
+            .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
+        
+        // Store main prediction record
+        let predictions_json = serde_json::to_value(&record.predictions)?;
+        let artifact_ids_json = serde_json::to_value(&record.artifact_ids)?;
+        
+        self.execute_in_tx_with_retry(&mut tx, || {
+            sqlx::query!(
+                r#"
+                INSERT INTO prediction_records (
+                    id, predictions, artifact_ids, created_at, confidence_avg, 
+                    prediction_count, highest_impact
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    predictions = EXCLUDED.predictions,
+                    artifact_ids = EXCLUDED.artifact_ids,
+                    updated_at = NOW()
+                "#,
+                record.id,
+                predictions_json,
+                artifact_ids_json,
+                record.created_at,
+                record.predictions.iter().map(|p| p.confidence as f64).sum::<f64>() 
+                    / record.predictions.len().max(1) as f64,
+                record.predictions.len() as i32,
+                record.predictions.iter().map(|p| p.estimated_impact).max_by(|a, b| 
+                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                ).unwrap_or(0.0)
+            )
+        }).await?;
+        
+        // Store individual predictions for better querying
+        for pred in &record.predictions {
+            let targets_json = serde_json::to_value(&pred.suggested_targets)?;
+            let priority_json = serde_json::to_value(&pred.recommended_priority)?;
+            
+            self.execute_in_tx_with_retry(&mut tx, || {
+                sqlx::query!(
+                    r#"
+                    INSERT INTO predictions (
+                        id, record_id, outcome_id, outcome_name, confidence,
+                        reasoning, suggested_targets, estimated_impact, 
+                        recommended_priority, created_at
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+                    )
+                    ON CONFLICT (outcome_id, record_id) DO UPDATE SET
+                        confidence = GREATEST(predictions.confidence, EXCLUDED.confidence),
+                        reasoning = COALESCE(EXCLUDED.reasoning, predictions.reasoning),
+                        updated_at = NOW()
+                    "#,
+                    Uuid::new_v4(),
+                    record.id,
+                    pred.outcome_id,
+                    pred.outcome_name,
+                    pred.confidence as f64,
+                    pred.reasoning,
+                    targets_json,
+                    pred.estimated_impact,
+                    priority_json,
+                    record.created_at
+                )
+            }).await?;
+        }
+        
+        // Update artifact-prediction associations for ML training
+        for artifact_id in &record.artifact_ids {
+            for pred in &record.predictions {
+                self.execute_in_tx_with_retry(&mut tx, || {
+                    sqlx::query!(
+                        r#"
+                        INSERT INTO artifact_predictions (
+                            artifact_id, prediction_id, outcome_id, confidence, created_at
+                        ) VALUES (
+                            $1, $2, $3, $4, $5
+                        )
+                        ON CONFLICT (artifact_id, outcome_id) DO UPDATE SET
+                            confidence = (artifact_predictions.confidence + EXCLUDED.confidence) / 2,
+                            occurrence_count = artifact_predictions.occurrence_count + 1,
+                            last_seen = NOW()
+                        "#,
+                        artifact_id,
+                        record.id,
+                        pred.outcome_id,
+                        pred.confidence as f64,
+                        record.created_at
+                    )
+                }).await?;
+            }
+        }
+        
+        tx.commit().await
+            .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
+        
+        // Update cache after successful storage
+        self.cache.write().await.store_prediction(record.clone());
+        
+        debug!("Stored prediction record {} with {} predictions", record.id, record.predictions.len());
+        Ok(())
+    }
+    
+    #[instrument(skip(self))]
+    async fn get_prediction_record(&self, id: Uuid) -> Result<Option<PredictionRecord>, CoreError> {
+        // Check cache first
+        if let Some(record) = self.cache.read().await.get_prediction(id) {
+            return Ok(Some(record));
+        }
+        
+        // Load from database
+        let row = sqlx::query!(
+            "SELECT id, predictions, artifact_ids, created_at FROM prediction_records WHERE id = $1",
+            id
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        
+        if let Some(row) = row {
+            let predictions: Vec<OutcomePrediction> = serde_json::from_value(row.predictions)
+                .map_err(|e| StorageError::SerializationError(e))?;
+            
+            let artifact_ids: Vec<Uuid> = serde_json::from_value(row.artifact_ids)
+                .map_err(|e| StorageError::SerializationError(e))?;
+            
+            let record = PredictionRecord {
+                id: row.id,
+                predictions,
+                artifact_ids,
+                created_at: row.created_at,
+            };
+            
+            // Update cache
+            self.cache.write().await.store_prediction(record.clone());
+            
+            Ok(Some(record))
+        } else {
+            Ok(None)
+        }
+    }
+    
+    #[instrument(skip(self))]
+    async fn query_predictions(&self, since: DateTime<Utc>, limit: usize) -> Result<Vec<PredictionRecord>, CoreError> {
+        // Check cache first for recent predictions
+        let cache = self.cache.read().await;
+        let mut cached_predictions: Vec<PredictionRecord> = cache.predictions
+            .values()
+            .filter(|(record, timestamp)| {
+                record.created_at >= since && 
+                Utc::now().signed_duration_since(*timestamp).to_std().unwrap_or_default() < cache.ttl
+            })
+            .map(|(record, _)| record.clone())
+            .collect();
+        
+        // If we have enough cached results, return them
+        if cached_predictions.len() >= limit {
+            cached_predictions.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            cached_predictions.truncate(limit);
+            return Ok(cached_predictions);
+        }
+        
+        drop(cache); // Release the read lock
+        
+        // Use indexed query with partition pruning for performance
+        let rows = sqlx::query!(
+            r#"
+            SELECT 
+                pr.id,
+                pr.predictions,
+                pr.artifact_ids,
+                pr.created_at,
+                pr.confidence_avg,
+                pr.prediction_count,
+                COUNT(pf.prediction_id) as feedback_count,
+                AVG(CASE WHEN pf.was_accurate THEN 1.0 ELSE 0.0 END) as accuracy_rate
+            FROM prediction_records pr
+            LEFT JOIN prediction_feedback pf ON pf.prediction_id = pr.id
+            WHERE pr.created_at >= $1
+            GROUP BY pr.id, pr.predictions, pr.artifact_ids, pr.created_at, 
+                     pr.confidence_avg, pr.prediction_count
+            ORDER BY pr.created_at DESC
+            LIMIT $2
+            "#,
+            since,
+            limit as i64
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        
+        let mut records = Vec::with_capacity(rows.len());
+        
+        for row in rows {
+            // Deserialize predictions with error handling
+            let predictions: Vec<OutcomePrediction> = serde_json::from_value(row.predictions)
+                .map_err(|e| {
+                    error!("Failed to deserialize predictions: {}", e);
+                    CoreError::Serialization(e)
+                })?;
+            
+            let artifact_ids: Vec<Uuid> = serde_json::from_value(row.artifact_ids)
+                .map_err(|e| {
+                    error!("Failed to deserialize artifact_ids: {}", e);
+                    CoreError::Serialization(e)
+                })?;
+            
+            // Adjust confidence based on feedback if available
+            let adjusted_predictions = if row.feedback_count.unwrap_or(0) > 0 {
+                let accuracy = row.accuracy_rate.unwrap_or_else(|| sqlx::types::BigDecimal::from_str("0.5").unwrap()).to_f32().unwrap_or(0.5);
+                predictions.into_iter().map(|mut p| {
+                    p.confidence = (p.confidence * 0.7 + accuracy * 0.3).min(1.0);
+                    p
+                }).collect()
+            } else {
+                predictions
+            };
+            
+            records.push(PredictionRecord {
+                id: row.id,
+                predictions: adjusted_predictions,
+                artifact_ids,
+                created_at: row.created_at,
+            });
+        }
+        
+        debug!("Retrieved {} prediction records since {}", records.len(), since);
+        Ok(records)
+    }
+    
+    #[instrument(skip(self, feedback))]
+    async fn store_prediction_feedback(&self, feedback: PredictionFeedback) -> Result<(), CoreError> {
+        let mut tx = self.pool.begin().await
+            .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
+        
+        // Store feedback
+        sqlx::query!(
+            r#"
+            INSERT INTO prediction_feedback (
+                id, prediction_id, actual_outcome, was_accurate, 
+                feedback_at, confidence_adjustment
+            ) VALUES (
+                $1, $2, $3, $4, $5, $6
+            )
+            "#,
+            Uuid::new_v4(),
+            feedback.prediction_id,
+            feedback.actual_outcome,
+            feedback.was_accurate,
+            feedback.feedback_at,
+            if feedback.was_accurate { 0.1 } else { -0.05 } // Confidence adjustment factor
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        
+        // Update prediction confidence based on feedback
+        let adjustment = if feedback.was_accurate { 1.1 } else { 0.95 };
+        
+        sqlx::query!(
+            r#"
+            UPDATE predictions 
+            SET confidence = LEAST(confidence * $1, 1.0),
+                feedback_count = feedback_count + 1,
+                accuracy_rate = (accuracy_rate * feedback_count + $2) / (feedback_count + 1)
+            WHERE outcome_id = $3
+            "#,
+            adjustment,
+            if feedback.was_accurate { 1.0 } else { 0.0 },
+            feedback.prediction_id
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        
+        // Update ML training data
+        sqlx::query!(
+            r#"
+            INSERT INTO ml_training_data (
+                id, prediction_id, actual_outcome, was_accurate, 
+                created_at, training_batch
+            ) VALUES (
+                $1, $2, $3, $4, $5, NULL
+            )
+            "#,
+            Uuid::new_v4(),
+            feedback.prediction_id,
+            feedback.actual_outcome,
+            feedback.was_accurate,
+            Utc::now()
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        
+        tx.commit().await
+            .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
+        
+        info!("Stored feedback for prediction {}: accurate={}", 
+              feedback.prediction_id, feedback.was_accurate);
+        Ok(())
+    }
+    
+    #[instrument(skip(self))]
+    async fn get_prediction_feedback(&self, prediction_id: Uuid) -> Result<Vec<PredictionFeedback>, CoreError> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT prediction_id, actual_outcome, was_accurate, feedback_at
+            FROM prediction_feedback
+            WHERE prediction_id = $1
+            ORDER BY feedback_at DESC
+            "#,
+            prediction_id
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| StorageError::QueryFailed(e.to_string()))?;
+        
+        let feedback: Vec<PredictionFeedback> = rows.into_iter()
+            .map(|row| PredictionFeedback {
+                prediction_id: row.prediction_id,
+                actual_outcome: row.actual_outcome,
+                was_accurate: row.was_accurate,
+                feedback_at: row.feedback_at,
+            })
+            .collect();
+        
+        Ok(feedback)
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PredictionRecord {
+    pub id: Uuid,
+    pub predictions: Vec<OutcomePrediction>,
+    pub artifact_ids: Vec<Uuid>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PredictionFeedback {
+    pub prediction_id: Uuid,
+    pub actual_outcome: String,
+    pub was_accurate: bool,
+    pub feedback_at: DateTime<Utc>,
+}
+
+
 
 /// In-memory cache for frequently accessed data
 struct StorageCache {
     outcomes: HashMap<OutcomeId, (Outcome, DateTime<Utc>)>,
     artifacts: HashMap<Uuid, (Artifact, DateTime<Utc>)>,
+    predictions: HashMap<Uuid, (PredictionRecord, DateTime<Utc>)>, // ADD THIS
     max_size: usize,
     ttl: std::time::Duration,
 }
@@ -926,6 +1303,7 @@ impl StorageCache {
         Self {
             outcomes: HashMap::new(),
             artifacts: HashMap::new(),
+            predictions: HashMap::new(),
             max_size,
             ttl: std::time::Duration::from_secs(300), // 5 minutes
         }
@@ -959,6 +1337,59 @@ impl StorageCache {
     fn invalidate_outcome(&mut self, id: OutcomeId) {
         self.outcomes.remove(&id);
     }
+    
+    fn get_artifact(&self, id: Uuid) -> Option<Artifact> {
+        if let Some((artifact, timestamp)) = self.artifacts.get(&id) {
+            if Utc::now().signed_duration_since(*timestamp).to_std().unwrap_or_default() < self.ttl {
+                return Some(artifact.clone());
+            }
+        }
+        None
+    }
+    
+    fn store_artifact(&mut self, artifact: Artifact) {
+        // Evict old entries if cache is full
+        if self.artifacts.len() >= self.max_size {
+            let oldest = self.artifacts
+                .iter()
+                .min_by_key(|(_, (_, ts))| ts)
+                .map(|(id, _)| *id);
+            
+            if let Some(id) = oldest {
+                self.artifacts.remove(&id);
+            }
+        }
+        
+        self.artifacts.insert(artifact.id, (artifact, Utc::now()));
+    }
+    
+    fn invalidate_artifact(&mut self, id: Uuid) {
+        self.artifacts.remove(&id);
+    }
+
+    // Add these methods to StorageCache impl:
+fn get_prediction(&self, id: Uuid) -> Option<PredictionRecord> {
+    if let Some((record, timestamp)) = self.predictions.get(&id) {
+        if Utc::now().signed_duration_since(*timestamp).to_std().unwrap_or_default() < self.ttl {
+            return Some(record.clone());
+        }
+    }
+    None
+}
+
+fn store_prediction(&mut self, record: PredictionRecord) {
+    if self.predictions.len() >= self.max_size {
+        let oldest = self.predictions
+            .iter()
+            .min_by_key(|(_, (_, ts))| ts)
+            .map(|(id, _)| *id);
+        
+        if let Some(id) = oldest {
+            self.predictions.remove(&id);
+        }
+    }
+    self.predictions.insert(record.id, (record.clone(), Utc::now()));
+}
 }
 
 /// Storage configuration

@@ -3,7 +3,7 @@
 use crate::{
     handlers::slack::{
         get_oauth_url, handle_events, handle_interactions, handle_oauth_callback,
-        handle_slash_commands,
+        handle_slash_commands, slack_health,
     },
     AppState,
 };
@@ -65,6 +65,7 @@ fn slack_webhook_routes() -> Router<Arc<AppState>> {
         .route("/interactions", post(handle_interactions))
         .route("/oauth", get(handle_oauth_callback))
         .route("/oauth/url", get(get_oauth_url))
+        .route("/health", get(slack_health))
 }
 
 /// GitHub webhook routes

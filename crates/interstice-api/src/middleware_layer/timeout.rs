@@ -364,9 +364,9 @@ impl CircuitBreaker {
         }
     }
 
-    pub fn current_state(&self) -> CircuitState {
-        *self.state.read()
-    }
+    // pub fn current_state(&self) -> CircuitState {
+    //     *self.state.read()
+    // }
 }
 
 // ==================== Metrics ====================

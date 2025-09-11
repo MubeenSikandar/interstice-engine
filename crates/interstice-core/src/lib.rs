@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::Result as AnyhowResult;
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 use uuid::Uuid;
@@ -34,7 +35,7 @@ pub use storage::{ProgressPoint, StorageBackend, WorkspaceStats};
 pub use traits::{MLPredictor, OutcomePrediction};
 pub use types::{Platform, UserId, WorkspaceId};
 
-use crate::{analytics::{MetricEvent, MetricQuery}, outcome::{OutcomeFilters, OutcomeId}, storage::{ArtifactFilters, CleanupStats}, types::{MetricValue, SystemEvent}};
+use crate::{analytics::{MetricEvent, MetricQuery}, outcome::{OutcomeFilters, OutcomeId}, storage::{ArtifactFilters, CleanupStats, PredictionFeedback, PredictionRecord}, types::{MetricValue, SystemEvent}};
 
 // Version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -425,13 +426,13 @@ impl IntersticeEngine {
         info!(
             "Processed {} artifacts with {} predictions in {:?}",
             artifacts.len(),
-            predictions.len(),
+            outcome_predictions.len(),
             elapsed
         );
         
         Ok(ProcessedData {
             artifacts,
-            predictions,
+            predictions: outcome_predictions,
             outcomes: Vec::new(), // Empty for now since we only have predictions
             processing_results,
             platform,
@@ -505,7 +506,7 @@ impl IntersticeEngine {
             CoreError::Configuration("No storage backend configured".to_string())
         })?;
         
-        storage.query_artifacts(workspace_id, None).await
+        storage.query_artifacts(workspace_id, Some(query.to_filters())).await
     }
     
     /// Get artifact statistics
@@ -792,6 +793,26 @@ impl StorageBackend for NullStorage {
             events_deleted: 0,
             timestamp: chrono::Utc::now(),
         })
+    }
+
+    async fn store_prediction_record(&self, _record: PredictionRecord) -> AnyhowResult<(), CoreError> {
+        Ok(())
+    }
+    
+    async fn query_predictions(&self, _since: DateTime<Utc>, _limit: usize) -> AnyhowResult<Vec<PredictionRecord>, CoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn store_prediction_feedback(&self, _feedback: PredictionFeedback) -> AnyhowResult<(), CoreError> {
+        Ok(())
+    }
+
+    async fn get_prediction_feedback(&self, _prediction_id: Uuid) -> AnyhowResult<Vec<PredictionFeedback>, CoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn get_prediction_record(&self, _id: Uuid) -> AnyhowResult<Option<PredictionRecord>, CoreError> {
+        Ok(None)
     }
 }
 

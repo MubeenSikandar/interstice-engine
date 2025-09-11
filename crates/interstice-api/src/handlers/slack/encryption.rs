@@ -6,7 +6,7 @@ use ring::{
     rand::{SecureRandom, SystemRandom},
 };
 use std::env;
-use tracing::error;
+// use tracing::error;
 
 use crate::handlers::slack::ENCRYPTION_KEY;
 
@@ -68,33 +68,33 @@ pub fn encrypt_token(token: &str) -> Result<String, Box<dyn std::error::Error>> 
     Ok(URL_SAFE_NO_PAD.encode(encrypted))
 }
 
-pub fn decrypt_token(encrypted: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let key = ENCRYPTION_KEY
-        .get()
-        .ok_or("Encryption key not initialized")?;
+// pub fn decrypt_token(encrypted: &str) -> Result<String, Box<dyn std::error::Error>> {
+//     let key = ENCRYPTION_KEY
+//         .get()
+//         .ok_or("Encryption key not initialized")?;
 
-    let encrypted_bytes = URL_SAFE_NO_PAD
-        .decode(encrypted)
-        .map_err(|e| format!("Invalid base64: {}", e))?;
+//     let encrypted_bytes = URL_SAFE_NO_PAD
+//         .decode(encrypted)
+//         .map_err(|e| format!("Invalid base64: {}", e))?;
 
-    if encrypted_bytes.len() < 12 {
-        return Err("Invalid encrypted data: too short".into());
-    }
+//     if encrypted_bytes.len() < 12 {
+//         return Err("Invalid encrypted data: too short".into());
+//     }
 
-    let (nonce_bytes, ciphertext) = encrypted_bytes.split_at(12);
-    let nonce = Nonce::assume_unique_for_key(*<&[u8; 12]>::try_from(nonce_bytes)?);
+//     let (nonce_bytes, ciphertext) = encrypted_bytes.split_at(12);
+//     let nonce = Nonce::assume_unique_for_key(*<&[u8; 12]>::try_from(nonce_bytes)?);
 
-    let mut in_out = ciphertext.to_vec();
+//     let mut in_out = ciphertext.to_vec();
 
-    let aad = Aad::from(b"slack_token_v1_*");
+//     let aad = Aad::from(b"slack_token_v1_*");
 
-    key.open_in_place(nonce, aad, &mut in_out).map_err(|e| {
-        error!("Decryption failed - possible tampering detected: {:?}", e);
-        format!("Failed to decrypt token: {:?}", e)
-    })?;
+//     key.open_in_place(nonce, aad, &mut in_out).map_err(|e| {
+//         error!("Decryption failed - possible tampering detected: {:?}", e);
+//         format!("Failed to decrypt token: {:?}", e)
+//     })?;
 
-    String::from_utf8(in_out).map_err(|e| format!("Invalid UTF-8 in decrypted token: {}", e).into())
-}
+//     String::from_utf8(in_out).map_err(|e| format!("Invalid UTF-8 in decrypted token: {}", e).into())
+// }
 
 // #[cfg(feature = "aws")]
 // async fn fetch_key_from_kms(key_id: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
