@@ -58,7 +58,7 @@ struct ArtifactRow {
 pub fn workspace_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_workspaces).post(create_workspace))
-        .route("/:id", get(get_workspace).put(update_workspace).delete(delete_workspace))
+        .route("/{id}", get(get_workspace).put(update_workspace).delete(delete_workspace))
 }
 
 // ============================================================================
@@ -68,7 +68,7 @@ pub fn workspace_routes() -> Router<Arc<AppState>> {
 pub fn artifact_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_artifacts).post(create_artifact))
-        .route("/:id", get(get_artifact))
+        .route("/{id}", get(get_artifact))
 }
 
 // ============================================================================
@@ -78,8 +78,8 @@ pub fn artifact_routes() -> Router<Arc<AppState>> {
 pub fn outcome_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", get(list_outcomes).post(create_outcome))
-        .route("/:id", get(get_outcome))
-        .route("/:id/predict", post(predict_outcomes))
+        .route("/{id}", get(get_outcome))
+        .route("/{id}/predict", post(predict_outcomes))
 }
 
 // ============================================================================
@@ -93,9 +93,9 @@ pub fn analytics_routes() -> Router<Arc<AppState>> {
         .route("/metrics/query", post(query_metrics))
         .route("/metrics/export", post(export_metrics))
         .route("/health", get(analytics_health))
-        .route("/workspaces/:id/stats", get(get_workspace_analytics))
-        .route("/workspaces/:id/insights", get(get_workspace_insights))
-        .route("/ws/:workspace_id", get(analytics_websocket))
+        .route("/workspaces/{id}/stats", get(get_workspace_analytics))
+        .route("/workspaces/{id}/insights", get(get_workspace_insights))
+        .route("/ws/{workspace_id}", get(analytics_websocket))
 }
 
 // Workspace handlers

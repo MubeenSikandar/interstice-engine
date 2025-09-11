@@ -1066,27 +1066,55 @@ CREATE INDEX IF NOT EXISTS idx_event_metrics_created ON public.event_metrics(cre
 -- ============================================================================
 
 -- Updated_at triggers for all tables that need them
-CREATE TRIGGER update_artifacts_updated_at BEFORE UPDATE ON public.artifacts 
-    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+DO $$ BEGIN
+    CREATE TRIGGER update_artifacts_updated_at BEFORE UPDATE ON public.artifacts 
+        FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
 
-CREATE TRIGGER update_outcomes_updated_at BEFORE UPDATE ON public.outcomes 
-    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+DO $$ BEGIN
+    CREATE TRIGGER update_outcomes_updated_at BEFORE UPDATE ON public.outcomes 
+        FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
 
-CREATE TRIGGER update_artifact_outcomes_updated_at BEFORE UPDATE ON public.artifact_outcomes 
-    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+DO $$ BEGIN
+    CREATE TRIGGER update_artifact_outcomes_updated_at BEFORE UPDATE ON public.artifact_outcomes 
+        FOR EACH ROW EXECUTE FUNCTION public.update_updated_at();
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
 
-CREATE TRIGGER set_updated_at_artifact_outcomes BEFORE UPDATE ON public.artifact_outcomes 
-    FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+DO $$ BEGIN
+    CREATE TRIGGER set_updated_at_artifact_outcomes BEFORE UPDATE ON public.artifact_outcomes 
+        FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
 
-CREATE TRIGGER update_training_examples_updated_at BEFORE UPDATE ON public.training_examples 
-    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+DO $$ BEGIN
+    CREATE TRIGGER update_training_examples_updated_at BEFORE UPDATE ON public.training_examples 
+        FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
 
-CREATE TRIGGER update_training_queue_updated_at BEFORE UPDATE ON public.training_queue 
-    FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+DO $$ BEGIN
+    CREATE TRIGGER update_training_queue_updated_at BEFORE UPDATE ON public.training_queue 
+        FOR EACH ROW EXECUTE FUNCTION public.update_updated_at_column();
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
 
 -- Webhook stats trigger
-CREATE TRIGGER webhook_stats_trigger AFTER INSERT ON public.webhook_logs 
-    FOR EACH ROW EXECUTE FUNCTION public.update_webhook_stats();
+DO $$ BEGIN
+    CREATE TRIGGER webhook_stats_trigger AFTER INSERT ON public.webhook_logs 
+        FOR EACH ROW EXECUTE FUNCTION public.update_webhook_stats();
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $$;
 
 -- ============================================================================
 -- PERMISSIONS AND SECURITY

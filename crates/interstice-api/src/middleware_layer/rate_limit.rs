@@ -855,7 +855,6 @@ pub async fn webhook_rate_limit_middleware(
     Ok(next.run(request).await)
 }
 
-/// Create Slack rate limiting middleware (Fixed: This was missing)
 pub fn slack_rate_limit() -> tower::ServiceBuilder<tower::layer::util::Identity> {
     tower::ServiceBuilder::new()
 }

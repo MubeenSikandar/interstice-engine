@@ -20,7 +20,7 @@ pub fn auth_protected_routes() -> Router<Arc<AppState>> {
         .route("/logout", post(logout))
         .route("/me", get(get_current_user))
         .route("/api-keys", get(list_api_keys).post(create_api_key))
-        .route("/api-keys/:id", delete(revoke_key))
+        .route("/api-keys/{id}", delete(revoke_key))
 }
 
 pub fn admin_routes() -> Router<Arc<AppState>> {

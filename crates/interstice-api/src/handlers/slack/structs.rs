@@ -15,8 +15,6 @@ pub struct SlackEventRequest {
     pub event_time: Option<i64>,
     pub team_id: Option<String>,
     pub api_app_id: Option<String>,
-    #[serde(skip_serializing)]
-    pub authed_users: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]

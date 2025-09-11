@@ -279,7 +279,7 @@ async fn process_team_event(
 
     // Store artifacts with robust batch processing
     let artifacts_clone = artifacts.clone();
-    let artifacts_future = store_artifacts_batch(&artifacts_clone, workspace_id, state.db.clone());
+    let artifacts_future = store_artifacts_batch(artifacts_clone, workspace_id, state.db.clone());
 
     // Run ML predictions in parallel if available
     let artifacts_for_ml = artifacts.clone();
@@ -320,7 +320,7 @@ async fn process_team_event(
 
         // Best effort - don't fail the whole operation
         if let Err(e) =
-            store_predictions_batch(&predictions, &artifact_ids, workspace_id, state.db.clone()).await
+            store_predictions_batch(predictions.clone(), artifact_ids, workspace_id, state.db.clone()).await
         {
             warn!("Failed to store predictions: {}", e);
         }
@@ -332,7 +332,7 @@ async fn process_team_event(
     let team_id_clone = team_id.clone();
     let artifacts_for_analytics = artifacts.clone();
     let predictions_for_analytics = predictions.clone();
-    if let Err(e) = update_workspace_analytics(&team_id_clone, &artifacts_for_analytics, &predictions_for_analytics, state.db.clone()).await {
+    if let Err(e) = update_workspace_analytics(team_id_clone, artifacts_for_analytics, predictions_for_analytics, state.db.clone()).await {
         warn!("Failed to update analytics: {}", e);
     }
 
@@ -358,47 +358,6 @@ async fn process_team_event(
     );
 
     Ok(())
-}
-
-pub async fn process_slack_event(
-    payload: SlackEventRequest,
-    state: Arc<AppState>,
-    _body_str: String,
-) -> AnyhowResult<SlackEventResponse> {
-    if let Some(event_id) = &payload.event_id {
-        if is_duplicate_event(event_id.clone(), state.clone()).await? {
-            info!(event_id = %event_id, "Duplicate event skipped");
-            return Ok(SlackEventResponse {
-                challenge: None,
-                ok: Some(true),
-            });
-        }
-    }
-
-    match payload.event.as_ref() {
-        Some(event_data) => {
-            let slack_event = SlackPushEvent {
-                event_type: payload.event_type.clone(),
-                event: Some(event_data.clone()),
-                team_id: payload.team_id.clone(),
-                api_app_id: payload.api_app_id.clone(),
-                event_id: payload.event_id.clone(),
-                event_time: payload.event_time,
-            };
-
-            if let Some(team_id) = &slack_event.team_id {
-                process_team_event(slack_event.clone(), team_id.clone(), state.clone()).await?;
-            }
-
-            store_event_audit(payload, state).await?;
-        }
-        None => warn!("Received Slack event without event data"),
-    }
-
-    Ok(SlackEventResponse {
-        challenge: None,
-        ok: Some(true),
-    })
 }
 
 /// Get workspace ID with caching support
@@ -509,22 +468,6 @@ pub async fn track_event_metrics(metrics: SlackEventMetrics, state: &Arc<AppStat
     .await;
 }
 
-/// Track processing metrics for monitoring
-async fn track_processing_metrics(
-    payload: &SlackEventRequest,
-    processing_time_ms: u128,
-    state: &Arc<AppState>,
-) {
-    let metrics = SlackEventMetrics {
-        event_type: payload.event_type.clone(),
-        team_id: payload.team_id.clone(),
-        platform: interstice_core::Platform::Slack,
-        processed_artifacts: 0, // Will be updated by process_team_event
-        processing_time_ms,
-    };
-
-    track_event_metrics(metrics, state).await;
-}
 
 // Extension trait for ML pipeline availability check
 trait MLPipelineExt {

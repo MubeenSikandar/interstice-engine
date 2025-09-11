@@ -80,20 +80,6 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Create a new app state
-    pub async fn new(db: PgPool) -> Self {
-        Self {
-            adapters: Arc::new(AdapterManager::new()),
-            slack_adapter: None,
-            core: Arc::new(IntersticeEngine::new()),
-            ml_pipeline: Arc::new(MLPipeline::new(interstice_ml::PipelineConfig::production(&std::env::var("DATABASE_URL").expect("DATABASE_URL must be set"))).await.expect("Failed to initialize ML pipeline")),
-            db,
-            analytics: None,
-            auth_config: AuthConfig::from_env(),
-            rate_limiter: Arc::new(RateLimiter::new(1000, Duration::from_secs(3600))),
-            timeout_manager: Arc::new(TimeoutManager::new(TimeoutConfig::from_env())),
-        }
-    }
     /// Get the core engine for processing
     pub fn engine(&self) -> &Arc<IntersticeEngine> {
         &self.core
@@ -126,6 +112,10 @@ async fn main() {
     // Validate required environment variables
     validate_environment();
 
+    // Get database URL for ML components
+    let database_url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set");
+
     // Database connection with retry logic
     let db = establish_database_connection().await;
 
@@ -144,13 +134,14 @@ async fn main() {
     }
 
     // Initialize ML components
-    let (ml_pipeline, ml_predictor) = initialize_ml_components(&db).await;
+    let (ml_pipeline, ml_predictor) = initialize_ml_components(&db, &database_url).await;
 
     // Initialize core engine with ML predictor and storage
-    let core = initialize_core_engine(ml_predictor, db.clone()).await;
+    let core = initialize_core_engine(ml_predictor, db.clone(), &database_url).await;
 
     // Initialize storage backend (share with core engine)
-    let storage_config = interstice_core::storage::StorageConfig::default();
+    let mut storage_config = interstice_core::storage::StorageConfig::default();
+    storage_config.database_url = database_url.to_string();
     let storage = Arc::new(PostgresStorage::new(storage_config).await.unwrap()) as Arc<dyn StorageBackend>;
 
     // Initialize analytics engine
@@ -289,12 +280,11 @@ async fn run_migrations(db: &PgPool) {
 /// Initialize ML components
 async fn initialize_ml_components(
     _db: &PgPool,
+    database_url: &str,
 ) -> (Arc<MLPipeline>, Arc<dyn MLPredictor>) {
-    let database_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set");
     
     // Initialize ML pipeline
-    let config = interstice_ml::PipelineConfig::production(&database_url);
+    let config = interstice_ml::PipelineConfig::production(database_url);
     let ml_pipeline = Arc::new(
         MLPipeline::new(config).await
             .expect("Failed to initialize ML pipeline")
@@ -320,9 +310,11 @@ async fn initialize_ml_components(
 async fn initialize_core_engine(
     ml_predictor: Arc<dyn MLPredictor>,
     _db: PgPool,
+    database_url: &str,
 ) -> Arc<IntersticeEngine> {
-    // Create storage backend
-    let storage_config = interstice_core::storage::StorageConfig::default();
+    // Create storage backend with proper database URL
+    let mut storage_config = interstice_core::storage::StorageConfig::default();
+    storage_config.database_url = database_url.to_string();
     let storage = Arc::new(PostgresStorage::new(storage_config).await.unwrap()) as Arc<dyn StorageBackend>;
 
     // Create engine with ML predictor and storage
@@ -678,7 +670,7 @@ fn build_router(state: Arc<AppState>) -> Router {
     // ========================================================================
     
     let admin_routes = Router::new()
-        .nest("/", routes::admin_routes())
+        .merge(routes::admin_routes())
         // Note: General rate limiting handled through create_rate_limit_layer()
         // Admin role requirement
         .route_layer(from_fn(|req, next| {

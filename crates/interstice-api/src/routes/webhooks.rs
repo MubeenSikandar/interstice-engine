@@ -44,8 +44,8 @@ pub fn webhook_routes() -> Router<Arc<AppState>> {
         .nest("/custom", custom_webhook_routes())
         // Webhook management endpoints
         .route("/", get(list_webhooks))
-        .route("/:webhook_id", get(get_webhook_status))
-        .route("/:webhook_id/logs", get(get_webhook_logs))
+        .route("/{webhook_id}", get(get_webhook_status))
+        .route("/{webhook_id}/logs", get(get_webhook_logs))
         .route("/test", post(test_webhook))
         // Apply middleware to all webhook routes
         .layer(
@@ -84,7 +84,7 @@ fn custom_webhook_routes() -> Router<Arc<AppState>> {
     Router::new()
         .route("/", post(handle_custom_webhook))
         .route("/register", post(register_custom_webhook))
-        .route("/:webhook_id", delete(delete_custom_webhook))
+        .route("/{webhook_id}", delete(delete_custom_webhook))
         // Custom webhook authentication
         .layer(
             ServiceBuilder::new()

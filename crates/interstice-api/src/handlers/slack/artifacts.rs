@@ -285,38 +285,6 @@ fn process_file_share(file: &JsonValue, team_id: &str) -> Option<Artifact> {
     })
 }
 
-pub async fn store_artifact_from_event(
-    artifact: &Artifact,
-    workspace_id: Uuid,
-    db: &PgPool,
-) -> AnyhowResult<()> {
-    let channel_id = artifact.metadata.get("channel_id").and_then(|v| v.as_str()).map(str::to_string);
-    
-    let message_id = artifact.metadata.get("message_ts").and_then(|v| v.as_str()).map(str::to_string);
-    
-    sqlx::query!(
-        r#"
-        INSERT INTO artifacts (
-            id, workspace_id, artifact_type, content,
-            channel_id, message_id, metadata, platform, created_at
-        )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
-        ON CONFLICT (id) DO NOTHING
-        "#,
-        artifact.id,
-        workspace_id,
-        format!("{:?}", artifact.artifact_type),
-        &artifact.content,
-        channel_id,
-        message_id,
-        &artifact.metadata,
-        artifact.platform.to_string()
-    )
-    .execute(db)
-    .await?;
-    
-    Ok(())
-}
 
 pub async fn run_ml_on_artifacts(
     artifacts: &[Artifact],
@@ -337,36 +305,11 @@ pub async fn run_ml_on_artifacts(
     ml_pipeline.predict_outcomes(workspace_id, &ml_artifacts, &context).await.map_err(Into::into)
 }
 
-pub async fn store_prediction_from_event(
-    prediction: &OutcomePrediction,
-    workspace_id: Uuid,
-    artifact_id: Uuid,
-    db: &PgPool,
-) -> AnyhowResult<()> {
-    sqlx::query!(
-        r#"
-        INSERT INTO inference_history (
-            id, workspace_id, artifact_id,
-            confidence, prediction_data, created_at
-        )
-        VALUES ($1, $2, $3, $4, $5, NOW())
-        "#,
-        Uuid::new_v4(),
-        workspace_id,
-        artifact_id,
-        prediction.confidence as f32,
-        serde_json::to_value(prediction)?
-    )
-    .execute(db)
-    .await?;
-    
-    Ok(())
-}
 
 pub async fn update_workspace_analytics(
-    team_id: &str,
-    artifacts: &[Artifact],
-    predictions: &[OutcomePrediction],
+    team_id: String,
+    artifacts: Vec<Artifact>,
+    predictions: Vec<OutcomePrediction>,
     db: PgPool,
 ) -> AnyhowResult<()> {
     sqlx::query!(
@@ -392,7 +335,7 @@ pub async fn update_workspace_analytics(
             document_count = workspace_analytics.document_count + EXCLUDED.document_count,
             updated_at = NOW()
         "#,
-        team_id,
+        &team_id,
         artifacts.len() as i32,
         predictions.len() as i32,
         artifacts.iter().filter(|a| matches!(a.artifact_type, ArtifactType::Message { .. })).count() as i32,
@@ -443,7 +386,7 @@ pub async fn store_artifact(
 }
 
 pub async fn store_artifacts_batch(
-    artifacts: &[Artifact],
+    artifacts: Vec<Artifact>,
     workspace_id: Uuid,
     db: PgPool,
 ) -> AnyhowResult<()> {
@@ -468,9 +411,9 @@ pub async fn store_artifacts_batch(
     validate_workspace_exists(workspace_id, &db).await?;
 
     // Process artifacts in chunks for better performance and memory usage
-    let chunks: Vec<Vec<&Artifact>> = artifacts
+    let chunks: Vec<Vec<Artifact>> = artifacts
         .chunks(CHUNK_SIZE)
-        .map(|chunk| chunk.iter().collect())
+        .map(|chunk| chunk.to_vec())
         .collect();
 
     let total_chunks = chunks.len();
@@ -547,7 +490,7 @@ pub async fn store_artifacts_batch(
         // Otherwise, try individual fallback for failed items
         let recovered = attempt_individual_recovery(
             &failed_artifacts,
-            artifacts,
+            &artifacts,
             workspace_id,
             &db,
         ).await;
@@ -579,7 +522,7 @@ pub async fn store_artifacts_batch(
 
 /// Store a chunk of artifacts with retry logic
 async fn store_chunk_with_retry(
-    chunk: Vec<&Artifact>,
+    chunk: Vec<Artifact>,
     workspace_id: Uuid,
     db: &PgPool,
     max_retries: u32,
@@ -625,7 +568,7 @@ async fn store_chunk_with_retry(
 
 /// Store a chunk of artifacts within a database transaction
 async fn store_chunk_transactional(
-    chunk: Vec<&Artifact>,
+    chunk: Vec<Artifact>,
     workspace_id: Uuid,
     db: &PgPool,
 ) -> AnyhowResult<usize> {
@@ -812,7 +755,7 @@ async fn store_single_artifact_safe(
 
 /// Identify which specific artifacts in a chunk failed
 async fn identify_failed_artifacts(
-    chunk: &[&Artifact],
+    chunk: &[Artifact],
     workspace_id: Uuid,
     db: &PgPool,
 ) -> Vec<usize> {
@@ -883,8 +826,8 @@ struct ChunkError {
 
 /// Similarly robust implementation for storing predictions in batch
 pub async fn store_predictions_batch(
-    predictions: &[OutcomePrediction],
-    artifact_ids: &[Uuid],
+    predictions: Vec<OutcomePrediction>,
+    artifact_ids: Vec<Uuid>,
     workspace_id: Uuid,
     db: PgPool,
 ) -> AnyhowResult<()> {
@@ -901,10 +844,10 @@ pub async fn store_predictions_batch(
         "Starting batch prediction storage"
     );
 
-    let chunks: Vec<(Vec<&OutcomePrediction>, Vec<&Uuid>)> = predictions
+    let chunks: Vec<(Vec<OutcomePrediction>, Vec<Uuid>)> = predictions
         .chunks(CHUNK_SIZE)
         .zip(artifact_ids.chunks(CHUNK_SIZE))
-        .map(|(pred_chunk, id_chunk)| (pred_chunk.iter().collect(), id_chunk.iter().collect()))
+        .map(|(pred_chunk, id_chunk)| (pred_chunk.to_vec(), id_chunk.to_vec()))
         .collect();
 
     let results = stream::iter(chunks)
@@ -938,8 +881,8 @@ pub async fn store_predictions_batch(
 
 /// Store a chunk of predictions
 async fn store_prediction_chunk(
-    pred_chunk: Vec<&OutcomePrediction>,
-    id_chunk: Vec<&Uuid>,
+    pred_chunk: Vec<OutcomePrediction>,
+    id_chunk: Vec<Uuid>,
     workspace_id: Uuid,
     db: &PgPool,
 ) -> AnyhowResult<usize> {
@@ -959,7 +902,7 @@ async fn store_prediction_chunk(
             "#,
             Uuid::new_v4(),
             workspace_id,
-            *artifact_id,
+            artifact_id,
             prediction.confidence as f32,
             serde_json::to_value(prediction)?
         )
