@@ -88,6 +88,8 @@ pub struct AdaptiveTimeoutConfig {
     pub recalculation_interval: Duration,
     /// Number of samples to keep for percentile calculation
     pub sample_window_size: usize,
+    /// Maximum age of samples to consider (older samples are discarded)
+    pub sample_retention_period: Duration,
 }
 
 impl Default for TimeoutConfig {
@@ -131,6 +133,7 @@ impl Default for AdaptiveTimeoutConfig {
             target_percentile: 99,
             recalculation_interval: Duration::from_secs(60),
             sample_window_size: 1000,
+            sample_retention_period: Duration::from_secs(3600), // 1 hour
         }
     }
 }
@@ -211,6 +214,7 @@ impl TimeoutConfig {
                 target_percentile: 95,
                 recalculation_interval: Duration::from_secs(30),
                 sample_window_size: 500,
+                sample_retention_period: Duration::from_secs(1800), // 30 minutes
             },
         }
     }
@@ -243,6 +247,7 @@ impl TimeoutConfig {
                 target_percentile: 99,
                 recalculation_interval: Duration::from_secs(120),
                 sample_window_size: 100,
+                sample_retention_period: Duration::from_secs(1800), // 30 minutes
             },
         }
     }
@@ -264,6 +269,19 @@ pub struct CircuitBreaker {
     last_failure_time: Arc<RwLock<Option<Instant>>>,
     last_state_change: Arc<RwLock<Instant>>,
     config: CircuitBreakerConfig,
+}
+
+impl std::fmt::Debug for CircuitBreaker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CircuitBreaker")
+            .field("state", &self.state.read())
+            .field("failure_count", &self.failure_count.load(Ordering::SeqCst))
+            .field("success_count", &self.success_count.load(Ordering::SeqCst))
+            .field("last_failure_time", &self.last_failure_time.read())
+            .field("last_state_change", &self.last_state_change.read())
+            .field("config", &self.config)
+            .finish()
+    }
 }
 
 impl CircuitBreaker {
@@ -409,6 +427,7 @@ struct DurationSample {
 
 // ==================== Timeout Manager ====================
 
+#[derive(Debug)]
 pub struct TimeoutManager {
     config: Arc<RwLock<TimeoutConfig>>,
     metrics: Arc<RwLock<TimeoutMetrics>>,
@@ -460,7 +479,11 @@ impl TimeoutManager {
         // Start metrics aggregation task
         manager.start_metrics_aggregation_task();
         
-        manager
+        // Start cleanup task
+        let manager_arc = Arc::new(manager);
+        manager_arc.clone().start_cleanup_task();
+        
+        Arc::try_unwrap(manager_arc).unwrap()
     }
 
     /// Execute an operation with timeout and circuit breaker
@@ -541,9 +564,15 @@ impl TimeoutManager {
         }
         
         let samples = self.duration_samples.read();
+        let now = Instant::now();
+        let retention_period = config.adaptive.sample_retention_period;
+        
         let operation_samples: Vec<_> = samples
             .iter()
-            .filter(|s| s.operation == operation_name)
+            .filter(|s| {
+                s.operation == operation_name && 
+                now.duration_since(s.timestamp) <= retention_period
+            })
             .map(|s| s.duration)
             .collect();
         
@@ -660,6 +689,42 @@ impl TimeoutManager {
         });
     }
 
+    /// Clean up old samples to prevent memory growth
+    async fn cleanup_old_samples(&self) {
+        let config = self.config.read();
+        let retention_period = config.adaptive.sample_retention_period;
+        drop(config); // Release the read lock
+        
+        let now = Instant::now();
+        let mut samples = self.duration_samples.write();
+        
+        // Remove samples older than retention period
+        samples.retain(|sample| now.duration_since(sample.timestamp) <= retention_period);
+        
+        debug!("Cleaned up old samples, {} remaining", samples.len());
+    }
+
+    /// Start cleanup task to remove old samples
+    fn start_cleanup_task(self: Arc<Self>) {
+        let mut shutdown_rx = self.shutdown_signal.subscribe();
+        
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(300)); // Run every 5 minutes
+            
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        self.cleanup_old_samples().await;
+                    }
+                    _ = shutdown_rx.recv() => {
+                        debug!("Cleanup task shutting down");
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
     /// Start metrics aggregation task
     fn start_metrics_aggregation_task(&self) {
         let metrics = Arc::clone(&self.metrics);
@@ -675,8 +740,10 @@ impl TimeoutManager {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
+                        let now = Instant::now();
                         let samples_vec: Vec<_> = samples.read()
                             .iter()
+                            .filter(|s| now.duration_since(s.timestamp) <= Duration::from_secs(3600)) // 1 hour retention
                             .map(|s| s.duration)
                             .collect();
                         
