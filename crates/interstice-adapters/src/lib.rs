@@ -372,9 +372,19 @@ impl AdapterManager {
         self.metrics.snapshot()
     }
     
+    /// Get event bus statistics
+    pub fn event_bus_stats(&self) -> EventBusStats {
+        self.event_bus.stats()
+    }
+    
     /// Subscribe to manager events
     pub fn subscribe(&self) -> EventSubscription {
         self.event_bus.subscribe()
+    }
+    
+    /// Unsubscribe from manager events
+    pub fn unsubscribe(&self, subscription: EventSubscription) {
+        self.event_bus.unsubscribe(subscription.id());
     }
     
     /// Update health cache
@@ -793,6 +803,16 @@ pub struct PlatformMetrics {
     pub circuit_opens: u64,
 }
 
+/// Event bus statistics
+#[derive(Debug, Clone, Serialize)]
+pub struct EventBusStats {
+    /// Number of active subscriptions
+    pub active_subscriptions: usize,
+    
+    /// List of subscription IDs
+    pub subscription_ids: Vec<Uuid>,
+}
+
 /// Event bus for manager events
 struct EventBus {
     subscribers: Arc<DashMap<Uuid, tokio::sync::mpsc::UnboundedSender<ManagerEvent>>>,
@@ -818,6 +838,17 @@ impl EventBus {
             let _ = subscriber.send(event.clone());
         }
     }
+    
+    fn unsubscribe(&self, id: Uuid) {
+        self.subscribers.remove(&id);
+    }
+    
+    fn stats(&self) -> EventBusStats {
+        EventBusStats {
+            active_subscriptions: self.subscribers.len(),
+            subscription_ids: self.subscribers.iter().map(|entry| *entry.key()).collect(),
+        }
+    }
 }
 /// Event subscription handle
 pub struct EventSubscription {
@@ -829,6 +860,11 @@ impl EventSubscription {
     /// Receive next event
     pub async fn recv(&mut self) -> Option<ManagerEvent> {
         self.receiver.recv().await
+    }
+    
+    /// Get the subscription ID
+    pub fn id(&self) -> Uuid {
+        self.id
     }
 }
 

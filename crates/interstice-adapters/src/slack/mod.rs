@@ -1,3 +1,5 @@
+// interstice-adapters/src/slack/mod.rs
+
 //! # Slack Platform Adapter
 //! 
 //! Production-ready Slack integration for the INTERSTICE-ENGINE WorkOS.
@@ -12,7 +14,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value};
+use serde_json;
 use slack_morphism::errors::SlackClientError;
 use slack_morphism::prelude::*;
 use slack_morphism::signature_verifier::SlackEventSignatureVerifier;
@@ -229,6 +231,11 @@ impl SlackAdapter {
     where
         F: Fn() -> futures::future::BoxFuture<'static, Result<T, SlackClientError>>,
     {
+        // Acquire rate limit permit before making request
+        if let Err(e) = self.rate_limiter.acquire().await {
+            return Err(e);
+        }
+        
         let mut attempt = 0;
         let mut delay = Duration::from_millis(self.config.retry_config.initial_delay_ms);
         
@@ -263,11 +270,47 @@ impl SlackAdapter {
         }
     }
     
-    /// Extract rate limit from error
+     /// Extract rate limit from Slack API error response
+    /// Slack returns rate limit info in headers and error responses
     fn extract_rate_limit(error: &SlackClientError) -> Option<u64> {
-        // Parse Slack's rate limit headers from error
-        // In production, this would extract from response headers
-        None
+        // Parse rate limit from different error types
+        match error {
+            SlackClientError::RateLimitError(rate_limit_error) => {
+                // Slack returns retry_after in seconds
+                rate_limit_error.retry_after.map(|d| d.as_secs())
+            }
+            SlackClientError::ApiError(api_error) => {
+                // Check for rate_limited error code
+                if api_error.code == "rate_limited" {
+                    // Try to extract from http_response_body
+                    api_error.http_response_body
+                        .as_ref()
+                        .and_then(|body| {
+                            serde_json::from_str::<serde_json::Value>(body).ok()
+                                .and_then(|v| v.get("retry_after").cloned())
+                                .and_then(|v| v.as_u64())
+                        })
+                } else {
+                    None
+                }
+            }
+            SlackClientError::HttpError(http_error) => {
+                // Check if it's a 429 status code
+                if http_error.status_code == 429 {
+                    // Extract from http_response_body
+                    http_error.http_response_body
+                        .as_ref()
+                        .and_then(|body| {
+                            serde_json::from_str::<serde_json::Value>(body).ok()
+                                .and_then(|v| v.get("retry_after").cloned())
+                                .and_then(|v| v.as_u64())
+                        })
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
     }
     
     /// Process Slack-specific event types
@@ -278,37 +321,11 @@ impl SlackAdapter {
             }
             SlackPushEvent::UrlVerification(verification) => {
                 info!("URL verification: {}", verification.challenge);
-                Ok(ProcessedData {
-                    artifacts: vec![],
-                    predictions: vec![],
-                    outcomes: vec![],
-                    processing_results: vec![],
-                    platform: Platform::Slack,
-                    metadata: interstice_core::ProcessingMetadata {
-                        duration: Duration::from_millis(0),
-                        timestamp: Utc::now(),
-                        engine_version: "1.0.0".to_string(),
-                    },
-                })
+                Ok(ProcessedData::default_with_platform(Platform::Slack))
             }
             SlackPushEvent::AppRateLimited(rate_limit) => {
                 warn!("App rate limited: {:?}", rate_limit);
                 Err(anyhow::anyhow!("Rate limited"))
-            }
-            _ => {
-                debug!("Unhandled Slack event type");
-                Ok(ProcessedData {
-                    artifacts: vec![],
-                    predictions: vec![],
-                    outcomes: vec![],
-                    processing_results: vec![],
-                    platform: Platform::Slack,
-                    metadata: interstice_core::ProcessingMetadata {
-                        duration: Duration::from_millis(0),
-                        timestamp: Utc::now(),
-                        engine_version: "1.0.0".to_string(),
-                    },
-                })
             }
         }
     }
@@ -322,18 +339,7 @@ impl SlackAdapter {
         let event_id = callback.event_id.0.clone();
         if !self.event_deduplicator.should_process(&event_id).await {
             debug!("Skipping duplicate event: {}", event_id);
-            return Ok(ProcessedData {
-                artifacts: vec![],
-                predictions: vec![],
-                outcomes: vec![],
-                processing_results: vec![],
-                platform: Platform::Slack,
-                metadata: interstice_core::ProcessingMetadata {
-                    duration: Duration::from_millis(0),
-                    timestamp: Utc::now(),
-                    engine_version: "1.0.0".to_string(),
-                },
-            });
+            return Ok(ProcessedData::default_with_platform(Platform::Slack));
         }
         
         match callback.event {
@@ -351,18 +357,7 @@ impl SlackAdapter {
             }
             _ => {
                 debug!("Unhandled callback event type");
-                Ok(ProcessedData {
-                    artifacts: vec![],
-                    predictions: vec![],
-                    outcomes: vec![],
-                    processing_results: vec![],
-                    platform: Platform::Slack,
-                    metadata: interstice_core::ProcessingMetadata {
-                        duration: Duration::from_millis(0),
-                        timestamp: Utc::now(),
-                        engine_version: "1.0.0".to_string(),
-                    },
-                })
+                Ok(ProcessedData::default_with_platform(Platform::Slack))
             }
         }
     }
@@ -375,18 +370,7 @@ impl SlackAdapter {
     ) -> AnyhowResult<ProcessedData> {
         // Skip bot messages to avoid loops
         if event.sender.bot_id.is_some() {
-            return Ok(ProcessedData {
-                artifacts: vec![],
-                predictions: vec![],
-                outcomes: vec![],
-                processing_results: vec![],
-                platform: Platform::Slack,
-                metadata: interstice_core::ProcessingMetadata {
-                    duration: Duration::from_millis(0),
-                    timestamp: Utc::now(),
-                    engine_version: "1.0.0".to_string(),
-                },
-            });
+            return Ok(ProcessedData::default_with_platform(Platform::Slack));
         }
         
         let content = event.content
@@ -396,18 +380,7 @@ impl SlackAdapter {
             .unwrap_or_default();
         
         if content.is_empty() {
-            return Ok(ProcessedData {
-                artifacts: vec![],
-                predictions: vec![],
-                outcomes: vec![],
-                processing_results: vec![],
-                platform: Platform::Slack,
-                metadata: interstice_core::ProcessingMetadata {
-                    duration: Duration::from_millis(0),
-                    timestamp: Utc::now(),
-                    engine_version: "1.0.0".to_string(),
-                },
-            });
+            return Ok(ProcessedData::default_with_platform(Platform::Slack));
         }
         
         // Process with engine
@@ -483,18 +456,7 @@ impl SlackAdapter {
             }).await;
         }
         
-        Ok(ProcessedData {
-            artifacts: vec![],
-            predictions: vec![],
-            outcomes: vec![],
-            processing_results: vec![],
-            platform: Platform::Slack,
-            metadata: interstice_core::ProcessingMetadata {
-                duration: Duration::from_millis(0),
-                timestamp: Utc::now(),
-                engine_version: "1.0.0".to_string(),
-            },
-        })
+        Ok(ProcessedData::default_with_platform(Platform::Slack))
     }
     
     /// Process file shared event
@@ -503,18 +465,7 @@ impl SlackAdapter {
         _event: SlackFileSharedEvent,
     ) -> AnyhowResult<ProcessedData> {
         // Extract file metadata and process as document artifact
-        Ok(ProcessedData {
-            artifacts: vec![],
-            predictions: vec![],
-            outcomes: vec![],
-            processing_results: vec![],
-            platform: Platform::Slack,
-            metadata: interstice_core::ProcessingMetadata {
-                duration: Duration::from_millis(0),
-                timestamp: Utc::now(),
-                engine_version: "1.0.0".to_string(),
-            },
-        })
+        Ok(ProcessedData::default_with_platform(Platform::Slack))
     }
     
     /// Process channel created event
@@ -523,18 +474,7 @@ impl SlackAdapter {
         _event: SlackChannelCreatedEvent,
     ) -> AnyhowResult<ProcessedData> {
         // Track new channel for workspace analytics
-        Ok(ProcessedData {
-            artifacts: vec![],
-            predictions: vec![],
-            outcomes: vec![],
-            processing_results: vec![],
-            platform: Platform::Slack,
-            metadata: interstice_core::ProcessingMetadata {
-                duration: Duration::from_millis(0),
-                timestamp: Utc::now(),
-                engine_version: "1.0.0".to_string(),
-            },
-        })
+        Ok(ProcessedData::default_with_platform(Platform::Slack))
     }
     
     /// Send artifact summary
@@ -843,8 +783,19 @@ impl PlatformAdapter for SlackAdapter {
         }
         
         // Add other metrics
-        status.metrics.insert("cache_hit_rate".to_string(), self.cache.hit_rate());
+        let cache_stats = self.cache.get_stats();
+        status.metrics.insert("cache_hit_rate".to_string(), cache_stats.hit_rate);
+        status.metrics.insert("cache_size".to_string(), cache_stats.size as f64);
+        status.metrics.insert("cache_avg_ttl".to_string(), cache_stats.avg_ttl_seconds as f64);
+        status.metrics.insert("cache_hits".to_string(), cache_stats.hits as f64);
+        status.metrics.insert("cache_misses".to_string(), cache_stats.misses as f64);
         status.metrics.insert("uptime_seconds".to_string(), self.metrics.uptime().as_secs() as f64);
+        
+        // Clear cache if it's getting too large
+        if cache_stats.size > self.config.cache_config.max_entries {
+            self.cache.clear();
+            status.metrics.insert("cache_cleared".to_string(), 1.0);
+        }
         
         Ok(status)
     }
@@ -975,10 +926,11 @@ impl PlatformAdapter for SlackAdapter {
     }
     
     async fn rate_limit_status(&self) -> Result<RateLimitStatus, AdapterError> {
+        let seconds_until_reset = self.rate_limiter.seconds_until_reset().await;
         Ok(RateLimitStatus {
             limit: 60,
             remaining: self.rate_limiter.remaining() as u32,
-            reset_at: Utc::now() + chrono::Duration::seconds(60),
+            reset_at: Utc::now() + chrono::Duration::seconds(seconds_until_reset as i64),
             window_seconds: 60,
         })
     }
@@ -1018,12 +970,13 @@ impl PlatformAdapter for SlackAdapter {
     }
 }
 
-/// Rate limiter implementation
+/// Enhanced Rate limiter with token bucket algorithm
 struct RateLimiter {
     semaphore: Arc<Semaphore>,
     max_requests: usize,
     window: Duration,
     last_reset: RwLock<Instant>,
+    current_window_start: RwLock<Instant>,
 }
 
 impl RateLimiter {
@@ -1033,6 +986,7 @@ impl RateLimiter {
             max_requests,
             window,
             last_reset: RwLock::new(Instant::now()),
+            current_window_start: RwLock::new(Instant::now()),
         }
     }
     
@@ -1040,73 +994,167 @@ impl RateLimiter {
         self.semaphore.available_permits()
     }
     
+    /// Acquire a permit with automatic window reset
     async fn acquire(&self) -> Result<(), AdapterError> {
-        // Reset if window expired
         let now = Instant::now();
-        let mut last_reset = self.last_reset.write().await;
-        if now.duration_since(*last_reset) > self.window {
-            *last_reset = now;
-            // Reset semaphore by adding back permits
-            self.semaphore.add_permits(self.max_requests - self.semaphore.available_permits());
+        
+        // Check if we need to reset the window
+        {
+            let mut last_reset = self.last_reset.write().await;
+            let mut window_start = self.current_window_start.write().await;
+            
+            if now.duration_since(*last_reset) >= self.window {
+                // Reset the rate limiter for new window
+                let permits_to_add = self.max_requests.saturating_sub(self.semaphore.available_permits());
+                if permits_to_add > 0 {
+                    self.semaphore.add_permits(permits_to_add);
+                }
+                *last_reset = now;
+                *window_start = now;
+            }
         }
         
+        // Try to acquire permit
         match self.semaphore.try_acquire() {
             Ok(permit) => {
-                std::mem::forget(permit); // Don't release on drop
+                std::mem::forget(permit); // Don't release on drop - consumed for this window
                 Ok(())
             }
-            Err(_) => Err(AdapterError::RateLimitExceeded {
-                retry_after: self.window.as_secs(),
-            }),
+            Err(_) => {
+                // Calculate time until window reset
+                let last = *self.last_reset.read().await;
+                let time_until_reset = self.window.saturating_sub(now.duration_since(last));
+                
+                Err(AdapterError::RateLimitExceeded {
+                    retry_after: time_until_reset.as_secs(),
+                })
+            }
         }
+    }
+
+     /// Get seconds until rate limit window resets
+     async fn seconds_until_reset(&self) -> u64 {
+        let now = Instant::now();
+        let last = *self.last_reset.read().await;
+        self.window.saturating_sub(now.duration_since(last)).as_secs()
     }
 }
 
-/// Cache implementation
+// Enhanced cache implementation with TTL and LRU eviction
+#[derive(Clone)]
 struct SlackCache {
     config: CacheConfig,
     entries: DashMap<String, CacheEntry>,
+    access_order: Arc<RwLock<Vec<String>>>, // Track LRU
+    hits: Arc<std::sync::atomic::AtomicU64>,
+    misses: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl SlackCache {
     fn new(config: CacheConfig) -> Self {
-        Self {
+        let cache = Self {
             config,
             entries: DashMap::new(),
-        }
-    }
-    
-    fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
-        if !self.config.enabled {
-            return None;
-        }
+            access_order: Arc::new(RwLock::new(Vec::new())),
+            hits: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            misses: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        };
         
-        self.entries.get(key)
-            .filter(|entry| !entry.is_expired())
-            .and_then(|entry| serde_json::from_value(entry.value.clone()).ok())
-    }
-    
-    fn set<T: Serialize>(&self, key: String, value: T) {
-        if !self.config.enabled {
-            return;
-        }
-        
-        // Evict old entries if at capacity
-        if self.entries.len() >= self.config.max_entries {
-            self.evict_expired();
-        }
-        
-        if let Ok(json_value) = serde_json::to_value(value) {
-            self.entries.insert(key, CacheEntry {
-                value: json_value,
-                expires_at: Instant::now() + Duration::from_secs(self.config.ttl_seconds),
+        // Start background eviction task
+        if cache.config.enabled {
+            let cache_clone = cache.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                loop {
+                    interval.tick().await;
+                    cache_clone.evict_expired();
+                }
             });
         }
+        
+        cache
     }
     
+   /// Get value from cache with LRU tracking
+   fn get<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
+    if !self.config.enabled {
+        return None;
+    }
+    
+    let result = self.entries.get(key)
+        .filter(|entry| !entry.is_expired())
+        .and_then(|entry| {
+            // Update access order for LRU
+            tokio::spawn({
+                let access_order = self.access_order.clone();
+                let key = key.to_string();
+                async move {
+                    let mut order = access_order.write().await;
+                    order.retain(|k| k != &key);
+                    order.push(key);
+                }
+            });
+            
+            serde_json::from_value(entry.value.clone()).ok()
+        });
+    
+    if result.is_some() {
+        self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    } else {
+        self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    
+    result
+}
+    
+   /// Set value in cache with automatic eviction
+   fn set<T: Serialize>(&self, key: String, value: T) {
+    if !self.config.enabled {
+        return;
+    }
+    
+    // Evict if at capacity
+    if self.entries.len() >= self.config.max_entries {
+        self.evict_lru();
+    }
+    
+    if let Ok(json_value) = serde_json::to_value(value) {
+        let entry = CacheEntry {
+            value: json_value,
+            expires_at: Instant::now() + Duration::from_secs(self.config.ttl_seconds),
+        };
+        
+        self.entries.insert(key.clone(), entry);
+        
+        // Update access order
+        tokio::spawn({
+            let access_order = self.access_order.clone();
+            async move {
+                let mut order = access_order.write().await;
+                order.push(key);
+            }
+        });
+    }
+}
+
+ /// Evict least recently used entry
+ fn evict_lru(&self) {
+    // Try async eviction first
+    if let Ok(order) = self.access_order.try_read() {
+        if let Some(oldest_key) = order.first() {
+            self.entries.remove(oldest_key);
+        }
+    } else {
+        // Fallback to evicting expired entries
+        self.evict_expired();
+    }
+}
+
+     
+    /// Evict all expired entries
     fn evict_expired(&self) {
         let now = Instant::now();
-        self.entries.retain(|_, entry| entry.expires_at > now);
+        self.entries.retain(|_, entry| !entry.is_expired_at(now));
     }
     
     fn size(&self) -> usize {
@@ -1114,20 +1162,84 @@ impl SlackCache {
     }
     
     fn hit_rate(&self) -> f64 {
-        // In production, would track hits and misses
-        0.85
+        let hits = self.hits.load(std::sync::atomic::Ordering::Relaxed) as f64;
+        let misses = self.misses.load(std::sync::atomic::Ordering::Relaxed) as f64;
+        let total = hits + misses;
+        
+        if total > 0.0 {
+            hits / total
+        } else {
+            0.0
+        }
+    }
+    
+    /// Get cache statistics including TTL information
+    fn get_stats(&self) -> CacheStats {
+        let mut total_ttl = 0u64;
+        let mut entry_count = 0usize;
+        
+        for entry in self.entries.iter() {
+            total_ttl += entry.ttl_seconds();
+            entry_count += 1;
+        }
+        
+        let avg_ttl = if entry_count > 0 {
+            total_ttl / entry_count as u64
+        } else {
+            0
+        };
+        
+        CacheStats {
+            size: self.size(),
+            hit_rate: self.hit_rate(),
+            avg_ttl_seconds: avg_ttl,
+            hits: self.hits.load(std::sync::atomic::Ordering::Relaxed),
+            misses: self.misses.load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
+    /// Clear all cache entries
+    fn clear(&self) {
+        self.entries.clear();
+        tokio::spawn({
+            let access_order = self.access_order.clone();
+            async move {
+                access_order.write().await.clear();
+            }
+        });
     }
 }
 
 #[derive(Clone)]
 struct CacheEntry {
-    value: Value,
+    value: serde_json::Value,
     expires_at: Instant,
+}
+
+#[derive(Debug)]
+struct CacheStats {
+    size: usize,
+    hit_rate: f64,
+    avg_ttl_seconds: u64,
+    hits: u64,
+    misses: u64,
 }
 
 impl CacheEntry {
     fn is_expired(&self) -> bool {
         Instant::now() > self.expires_at
+    }
+    
+    /// Check if entry is expired at given time
+    fn is_expired_at(&self, now: Instant) -> bool {
+        now > self.expires_at
+    }
+    
+    /// Get remaining TTL in seconds
+    fn ttl_seconds(&self) -> u64 {
+        self.expires_at
+            .saturating_duration_since(Instant::now())
+            .as_secs()
     }
 }
 
@@ -1414,6 +1526,12 @@ impl ExtendedAdapter for SlackAdapter {
     }
     
     async fn get_user(&self, user_id: &str) -> interstice_core::Result<UserInfo> {
+        // Check cache first
+        let cache_key = format!("user:{}", user_id);
+        if let Some(cached_user) = self.cache.get::<UserInfo>(&cache_key) {
+            return Ok(cached_user);
+        }
+        
         let user_info = self.execute_with_retry(|| {
             let client = self.client.clone();
             let bot_token = self.config.bot_token.clone();
@@ -1429,7 +1547,7 @@ impl ExtendedAdapter for SlackAdapter {
         
         let user = user_info.user;
         
-        Ok(UserInfo {
+        let user_info = UserInfo {
             id: user.id.to_string(),
             username: user.name.unwrap_or_default(),
             display_name: user.real_name,
@@ -1440,10 +1558,21 @@ impl ExtendedAdapter for SlackAdapter {
             is_bot: false,
             is_admin: false,
             metadata: HashMap::new(),
-        })
+        };
+        
+        // Cache the result
+        self.cache.set(cache_key, user_info.clone());
+        
+        Ok(user_info)
     }
     
     async fn list_channels(&self) -> interstice_core::Result<Vec<ChannelInfo>> {
+        // Check cache first
+        let cache_key = "channels:list";
+        if let Some(cached_channels) = self.cache.get::<Vec<ChannelInfo>>(cache_key) {
+            return Ok(cached_channels);
+        }
+        
         let channels = self.execute_with_retry(|| {
             let client = self.client.clone();
             let bot_token = self.config.bot_token.clone();
@@ -1456,7 +1585,7 @@ impl ExtendedAdapter for SlackAdapter {
         .await
         .map_err(|e| interstice_core::CoreError::Internal(e.to_string()))?;
         
-        let channel_infos = channels.channels
+        let channel_infos: Vec<ChannelInfo> = channels.channels
             .into_iter()
             .map(|ch| ChannelInfo {
                 id: ch.id.to_string(),
@@ -1470,6 +1599,9 @@ impl ExtendedAdapter for SlackAdapter {
             })
             .collect();
         
+        // Cache the result
+        self.cache.set(cache_key.to_string(), channel_infos.clone());
+        
         Ok(channel_infos)
     }
     
@@ -1480,6 +1612,28 @@ impl ExtendedAdapter for SlackAdapter {
             required: vec![],
             sections: None,
         })
+    }
+}
+
+/// Helper trait for ProcessedData
+trait ProcessedDataExt {
+    fn default_with_platform(platform: Platform) -> Self;
+}
+
+impl ProcessedDataExt for ProcessedData {
+    fn default_with_platform(platform: Platform) -> Self {
+        ProcessedData {
+            artifacts: vec![],
+            predictions: vec![],
+            outcomes: vec![],
+            processing_results: vec![],
+            platform,
+            metadata: interstice_core::ProcessingMetadata {
+                duration: Duration::from_millis(0),
+                timestamp: Utc::now(),
+                engine_version: "1.0.0".to_string(),
+            },
+        }
     }
 }
 
