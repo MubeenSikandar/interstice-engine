@@ -886,6 +886,8 @@ impl OutcomeMapper {
             suggested_targets: targets.iter().map(|s| s.to_string()).collect(),
             estimated_impact: impact,
             recommended_priority: priority,
+            alternative_outcomes: Vec::new(),
+            contributing_factors: Vec::new(),
         }
     }
     
@@ -910,6 +912,8 @@ impl OutcomeMapper {
             suggested_targets: suggested_targets.iter().map(|t| t.name.clone()).collect(),
             estimated_impact: estimated_impact,
             recommended_priority: recommended_priority,
+            alternative_outcomes: Vec::new(),
+            contributing_factors: Vec::new(),
         }
     }
 
@@ -1111,6 +1115,8 @@ impl PredictionAccumulator {
             suggested_targets: self.all_targets.into_iter().collect(),
             estimated_impact: self.max_impact,
             recommended_priority: self.highest_priority,
+            alternative_outcomes: Vec::new(),
+            contributing_factors: Vec::new(),
         }
     }
 }

@@ -1,7 +1,4 @@
 // src/handlers/slack/db.rs
-
-use std::collections::HashMap;
-
 use chrono::Utc;
 use interstice_core::{artifact::{ArtifactState, QualityMetrics}, Artifact, ArtifactType, Platform, WorkspaceId};
 use interstice_ml::OutcomePrediction;
@@ -119,7 +116,7 @@ pub async fn fetch_recent_artifacts(
             content: r.content.clone(),
             mentions: vec![],
             attachments: vec![],
-            reactions: HashMap::new(),
+            reactions: Vec::new(),
             sentiment: interstice_core::artifact::Sentiment::Neutral,
             intent: interstice_core::artifact::MessageIntent::Discussion,
             is_edited: false,
@@ -172,7 +169,7 @@ pub async fn fetch_channel_artifacts(
             content: r.content.clone(),
             mentions: vec![],
             attachments: vec![],
-            reactions: HashMap::new(),
+            reactions: Vec::new(),
             sentiment: interstice_core::artifact::Sentiment::Neutral,
             intent: interstice_core::artifact::MessageIntent::Discussion,
             is_edited: false,

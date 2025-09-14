@@ -238,7 +238,7 @@ impl Artifact {
 }
 
 /// Artifact type enumeration with platform-specific details
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ArtifactType {
     /// Pull request from version control
@@ -316,7 +316,7 @@ pub enum ArtifactType {
         content: String,
         mentions: Vec<String>,
         attachments: Vec<Attachment>,
-        reactions: HashMap<String, u32>,
+        reactions: Vec<(String, u32)>,
         sentiment: Sentiment,
         intent: MessageIntent,
         is_edited: bool,
@@ -387,13 +387,13 @@ pub enum ArtifactType {
     /// Metric or measurement
     Metric {
         name: String,
-        value: f64,
+        value: i64, // Scaled by 1000 to preserve 3 decimal places
         metric_type: MetricType,
         unit: String,
-        tags: HashMap<String, String>,
+        tags: Vec<(String, String)>, // Changed from HashMap to Vec for Hash
         anomaly: bool,
-        baseline: Option<f64>,
-        threshold: Option<f64>,
+        baseline: Option<i64>, // Scaled by 1000
+        threshold: Option<i64>, // Scaled by 1000
         trend: Trend,
     },
     
@@ -423,7 +423,7 @@ pub enum ArtifactType {
         screens: u32,
         last_modified: DateTime<Utc>,
         design_system: Option<String>,
-        accessibility_score: Option<f64>,
+        accessibility_score: Option<i64>,
     },
     
     /// Test result
@@ -434,16 +434,16 @@ pub enum ArtifactType {
         failed: u32,
         skipped: u32,
         duration: Duration,
-        coverage: Option<f64>,
+        coverage: Option<i64>,
         test_type: TestType,
         flaky_tests: Vec<String>,
-        performance_metrics: HashMap<String, f64>,
+        performance_metrics: Vec<(String, i64)>,
     },
     
     /// Custom artifact type
     Custom {
         category: String,
-        attributes: HashMap<String, JsonValue>,
+        attributes: Vec<(String, JsonValue)>,
         schema_version: String,
     },
 }
@@ -501,7 +501,7 @@ impl Severity {
 }
 
 // Enums for better type safety
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub enum PullRequestState {
     Open,
     Closed,
@@ -509,7 +509,7 @@ pub enum PullRequestState {
     Draft,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum IssueState {
     Open,
     InProgress,
@@ -518,7 +518,7 @@ pub enum IssueState {
     Reopened,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum Priority {
     Critical,
     High,
@@ -537,7 +537,7 @@ impl Priority {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum DocumentType {
     Wiki,
     Specification,
@@ -548,7 +548,7 @@ pub enum DocumentType {
     Other(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum AccessLevel {
     Public,
     Internal,
@@ -556,7 +556,7 @@ pub enum AccessLevel {
     Restricted,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub struct Attachment {
     pub name: String,
     pub url: String,
@@ -564,7 +564,7 @@ pub struct Attachment {
     pub size: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum Sentiment {
     Positive,
     Neutral,
@@ -572,7 +572,7 @@ pub enum Sentiment {
     Mixed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum MessageIntent {
     Question,
     Answer,
@@ -583,7 +583,7 @@ pub enum MessageIntent {
     Other,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub struct Attendee {
     pub name: String,
     pub email: String,
@@ -591,7 +591,7 @@ pub struct Attendee {
     pub required: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq ,Ord, PartialOrd, Eq, Hash)]
 pub enum AttendeeResponse {
     Accepted,
     Declined,
@@ -599,7 +599,7 @@ pub enum AttendeeResponse {
     NoResponse,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub enum MeetingType {
     Standup,
     Planning,
@@ -612,7 +612,7 @@ pub enum MeetingType {
     Other(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum TaskStatus {
     Todo,
     InProgress,
@@ -622,14 +622,14 @@ pub enum TaskStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub struct ChecklistItem {
     pub text: String,
     pub completed: bool,
     pub assignee: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum ReviewState {
     Pending,
     Approved,
@@ -638,7 +638,7 @@ pub enum ReviewState {
     Dismissed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub struct ReviewComment {
     pub file: String,
     pub line: Option<u32>,
@@ -646,7 +646,7 @@ pub struct ReviewComment {
     pub severity: CommentSeverity,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum CommentSeverity {
     Blocker,
     Major,
@@ -654,7 +654,7 @@ pub enum CommentSeverity {
     Nitpick,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum Environment {
     Development,
     Staging,
@@ -664,7 +664,7 @@ pub enum Environment {
     Custom(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum DeploymentStrategy {
     BlueGreen,
     Canary,
@@ -673,14 +673,14 @@ pub enum DeploymentStrategy {
     Shadow,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub struct HealthCheck {
     pub name: String,
     pub passed: bool,
     pub response_time: Duration,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub enum MetricType {
     Gauge,
     Counter,
@@ -688,7 +688,7 @@ pub enum MetricType {
     Summary,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub enum Trend {
     Rising,
     Falling,
@@ -696,7 +696,7 @@ pub enum Trend {
     Volatile,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Ord, PartialOrd, Eq, Hash)]
 pub enum Severity {
     Critical,
     High,
@@ -705,7 +705,7 @@ pub enum Severity {
     Info,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub enum DesignType {
     Figma,
     Sketch,
@@ -715,7 +715,7 @@ pub enum DesignType {
     Other(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub enum TestType {
     Unit,
     Integration,
@@ -725,7 +725,7 @@ pub enum TestType {
     Accessibility,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash, PartialEq, Eq)]
 pub enum CIStatus {
     Success,
     Failed,
@@ -1227,13 +1227,14 @@ impl Parser for TeamsParser {
                             })
                         }).collect())
                         .unwrap_or_default();
-                    let reactions: HashMap<String, u32> = value["reactions"].as_array()
-                        .map(|arr| arr.iter().fold(HashMap::new(), |mut map, r| {
+                    let reactions: Vec<(String, u32)> = value["reactions"].as_array()
+                        .map(|arr| arr.iter().filter_map(|r| {
                             if let (Some(name), Some(count)) = (r["reactionType"].as_str(), r["count"].as_u64()) {
-                                map.insert(name.to_string(), count as u32);
+                                Some((name.to_string(), count as u32))
+                            } else {
+                                None
                             }
-                            map
-                        }))
+                        }).collect())
                         .unwrap_or_default();
                     let sentiment = Sentiment::Neutral;
                     let intent = MessageIntent::Discussion;
@@ -1281,7 +1282,7 @@ impl Parser for TeamsParser {
                             content: content.clone(),
                             mentions,
                             attachments: Vec::new(),
-                            reactions: HashMap::new(),
+                            reactions: Vec::new(),
                             sentiment: Sentiment::Neutral,
                             intent: MessageIntent::Discussion,
                             is_edited: false,
@@ -1428,14 +1429,15 @@ impl Parser for SlackParser {
                             })
                         }).collect())
                         .unwrap_or_default();
-                    let reactions: HashMap<String, u32> = value["reactions"].as_array()
-                        .map(|arr| arr.iter().fold(HashMap::new(), |mut map, r| {
+                    let reactions: Vec<(String, u32)> = value["reactions"].as_array()
+                        .map(|arr| arr.iter().filter_map(|r| {
                             if let Some(name) = r["name"].as_str() {
                                 let count = r["count"].as_u64().unwrap_or(0) as u32;
-                                map.insert(name.to_string(), count);
+                                Some((name.to_string(), count))
+                            } else {
+                                None
                             }
-                            map
-                        }))
+                        }).collect())
                         .unwrap_or_default();
                     let sentiment = Sentiment::Neutral;
                     let intent = MessageIntent::Discussion;
@@ -1483,7 +1485,7 @@ impl Parser for SlackParser {
                             content: content.clone(),
                         mentions,
                         attachments: Vec::new(),
-                        reactions: HashMap::new(),
+                        reactions: Vec::new(),
                         sentiment: Sentiment::Neutral,
                         intent: MessageIntent::Discussion,
                         is_edited: false,

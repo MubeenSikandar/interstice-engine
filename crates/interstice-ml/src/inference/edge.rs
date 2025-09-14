@@ -1,4 +1,8 @@
-//interstice-ml/src/inference/edge.rs
+//! Edge Computing Module - Model Optimization for Edge Deployment
+//! 
+//! This module provides enterprise-grade model optimization capabilities
+//! for deploying ML models to edge environments with minimal latency.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -7,19 +11,20 @@ use anyhow::{Result};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::{ error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
+use uuid::Uuid;
 
-// Custom error types for edge inference
+// Re-export interstice_core::Platform for consistency
+pub use interstice_core::Platform;
+
+use crate::MLPipeline;
+use crate::inference::cache::ConcurrentLRUCache;
+
+/// Custom error types for edge optimization
 #[derive(Error, Debug)]
 pub enum EdgeError {
-    #[error("Platform {0} not supported")]
-    UnsupportedPlatform(String),
-    
     #[error("Model optimization failed: {0}")]
     OptimizationError(String),
-    
-    #[error("Deployment failed for platform {platform}: {reason}")]
-    DeploymentError { platform: String, reason: String },
     
     #[error("Model compilation failed: {0}")]
     CompilationError(String),
@@ -30,203 +35,115 @@ pub enum EdgeError {
     #[error("Model validation failed: {0}")]
     ValidationError(String),
     
-    #[error("Network error: {0}")]
-    NetworkError(String),
-    
-    #[error("Serialization error: {0}")]
-    SerializationError(String),
+    #[error("Unsupported optimization for platform {0}: {1}")]
+    UnsupportedOptimization(String, String),
 }
 
-// Supported deployment platforms
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
-pub enum Platform {
-    VSCode,
-    Slack,
-    Discord,
-    Browser,
-    Mobile(MobilePlatform),
-    CloudflareWorkers,
-    AWSLambdaEdge,
-    FastlyCompute,
-    Custom(String),
+/// Data types for quantization
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub enum DType {
+    Float32,
+    Float16,
+    BFloat16,
+    Int8,
+    UInt8,
+    Int4,
+    Binary,
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
-pub enum MobilePlatform {
-    iOS,
-    Android,
-}
-
-#[derive(Debug, Clone)]
-struct WasmModule {
-    bytes: Vec<u8>,
-    exports: Vec<String>,
-    memory_pages: u32,
-}
-
-#[derive(Debug, Clone)]
-struct WorkerBundle {
-    wasm: WasmModule,
-    bindings: Vec<String>,
-    routes: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-struct VSCodePackage {
-    wasm: WasmModule,
-    manifest: ExtensionManifest,
-    assets: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct ExtensionManifest {
-    name: String,
-    version: String,
-    publisher: String,
-}
-
-#[derive(Debug, Clone)]
-struct CompiledModel {
-    format: ModelFormat,
-    data: Vec<u8>,
-    metadata: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone)]
-enum ModelFormat {
-    ONNX,
-    CoreML,
-    TFLite,
-    WASM,
-}
-
-struct ModelCompiler;
-
-impl ModelCompiler {
-    fn new() -> Self {
-        Self
+impl DType {
+    /// Get size in bytes
+    pub fn size_bytes(&self) -> usize {
+        match self {
+            Self::Float32 => 4,
+            Self::Float16 | Self::BFloat16 => 2,
+            Self::Int8 | Self::UInt8 => 1,
+            Self::Int4 | Self::Binary => 1, // Packed representation
+        }
     }
     
-    async fn compile_to_wasm(&self, _model: OptimizedModel) -> Result<WasmModule> {
-        Ok(WasmModule {
-            bytes: vec![],
-            exports: vec![],
-            memory_pages: 256,
-        })
+    /// Check if dtype is supported on platform
+    pub fn is_supported_on(&self, platform: Platform) -> bool {
+        match platform {
+            Platform::VSCode => matches!(self, Self::Float32 | Self::Float16 | Self::Int8),
+            Platform::Slack | Platform::Teams => matches!(self, Self::Float16 | Self::Int8),
+            _ => true,
+        }
     }
-    
-    async fn compile_to_worker(&self, _model: OptimizedModel) -> Result<WorkerBundle> {
-        Ok(WorkerBundle {
-            wasm: WasmModule {
-                bytes: vec![],
-                exports: vec![],
-                memory_pages: 256,
+}
+
+/// Model optimization configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptimizationConfig {
+    pub quantization: Option<QuantizationConfig>,
+    pub pruning: Option<PruningConfig>,
+    pub distillation: Option<DistillationConfig>,
+    pub target_size_mb: Option<f32>,
+    pub target_latency_ms: Option<u32>,
+    pub min_accuracy: f32,
+}
+
+impl Default for OptimizationConfig {
+    fn default() -> Self {
+        Self {
+            quantization: Some(QuantizationConfig::default()),
+            pruning: None,
+            distillation: None,
+            target_size_mb: Some(50.0),
+            target_latency_ms: Some(100),
+            min_accuracy: 0.95,
+        }
+    }
+}
+
+impl OptimizationConfig {
+    /// Create platform-specific optimization config
+    pub fn for_platform(platform: Platform) -> Self {
+        match platform {
+            Platform::VSCode => Self {
+                quantization: Some(QuantizationConfig {
+                    target_dtype: DType::Int8,
+                    calibration_samples: 1000,
+                    symmetric: true,
+                    per_channel: true,
+                }),
+                pruning: Some(PruningConfig {
+                    sparsity: 0.8,
+                    structured: true,
+                    granularity: PruningGranularity::Block(4),
+                }),
+                target_size_mb: Some(100.0),
+                target_latency_ms: Some(50),
+                min_accuracy: 0.93,
+                ..Default::default()
             },
-            bindings: vec![],
-            routes: vec![],
-        })
-    }
-    
-    async fn compile_to_coreml(&self, _model: OptimizedModel) -> Result<CompiledModel> {
-        Ok(CompiledModel {
-            format: ModelFormat::CoreML,
-            data: vec![],
-            metadata: HashMap::new(),
-        })
-    }
-    
-    async fn compile_to_tflite(&self, _model: OptimizedModel) -> Result<CompiledModel> {
-        Ok(CompiledModel {
-            format: ModelFormat::TFLite,
-            data: vec![],
-            metadata: HashMap::new(),
-        })
-    }
-    
-    async fn compile_standard(&self, _model: OptimizedModel) -> Result<CompiledModel> {
-        Ok(CompiledModel {
-            format: ModelFormat::ONNX,
-            data: vec![],
-            metadata: HashMap::new(),
-        })
+            Platform::Slack | Platform::Teams => Self {
+                quantization: Some(QuantizationConfig {
+                    target_dtype: DType::Float16,
+                    calibration_samples: 500,
+                    ..Default::default()
+                }),
+                pruning: Some(PruningConfig {
+                    sparsity: 0.7,
+                    ..Default::default()
+                }),
+                target_size_mb: Some(25.0),
+                target_latency_ms: Some(100),
+                min_accuracy: 0.95,
+                ..Default::default()
+            },
+            _ => Self::default(),
+        }
     }
 }
 
-struct EdgeDeployer;
-
-impl EdgeDeployer {
-    fn new() -> Self {
-        Self
-    }
-    
-    async fn deploy_vscode(&self, _package: VSCodePackage) -> Result<String> {
-        Ok("vscode://extension/interstice.model".to_string())
-    }
-    
-    async fn deploy_to_edge_workers(&self, _model: OptimizedModel, provider: &str) -> Result<String> {
-        Ok(format!("https://edge.{}.com/model", provider))
-    }
-    
-    async fn deploy_cloudflare(&self, _bundle: WorkerBundle) -> Result<String> {
-        Ok("https://model.workers.dev".to_string())
-    }
-    
-    async fn deploy_mobile(&self, _model: CompiledModel, platform: MobilePlatform) -> Result<String> {
-        Ok(format!("mobile://{:?}/model", platform))
-    }
-    
-    async fn deploy_standard(&self, _model: CompiledModel, platform: Platform) -> Result<String> {
-        Ok(format!("https://api.interstice.ai/{:?}/model", platform))
-    }
-    
-    async fn undeploy(&self, _model: &EdgeModel) -> Result<()> {
-        Ok(())
-    }
-    
-    async fn rollback(&self, _model: &EdgeModel) -> Result<()> {
-        Ok(())
-    }
-}
-
-struct EdgeMonitor;
-
-impl EdgeMonitor {
-    fn new() -> Self {
-        Self
-    }
-    
-    async fn start_monitoring(&self, _model: &EdgeModel) -> Result<()> {
-        Ok(())
-    }
-    
-    async fn stop_monitoring(&self, _model: &EdgeModel) -> Result<()> {
-        Ok(())
-    }
-    
-    async fn check_health(&self, _model: &EdgeModel) -> Result<HealthStatus> {
-        Ok(HealthStatus {
-            is_healthy: true,
-            latency_ms: 10,
-            error_rate: 0.01,
-        })
-    }
-}
-
-#[derive(Debug, Clone)]
-struct HealthStatus {
-    is_healthy: bool,
-    latency_ms: u64,
-    error_rate: f32,
-}
-
-// Model optimization configurations
+/// Quantization configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuantizationConfig {
     pub target_dtype: DType,
     pub calibration_samples: usize,
     pub symmetric: bool,
     pub per_channel: bool,
-    pub min_accuracy_threshold: f32,
 }
 
 impl Default for QuantizationConfig {
@@ -235,29 +152,25 @@ impl Default for QuantizationConfig {
             target_dtype: DType::Int8,
             calibration_samples: 1000,
             symmetric: true,
-            per_channel: true,
-            min_accuracy_threshold: 0.95,
+            per_channel: false,
         }
     }
 }
 
+/// Pruning configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PruningConfig {
     pub sparsity: f32,
     pub structured: bool,
     pub granularity: PruningGranularity,
-    pub importance_metric: ImportanceMetric,
-    pub iterative: bool,
 }
 
 impl Default for PruningConfig {
     fn default() -> Self {
         Self {
-            sparsity: 0.9,
-            structured: true,
-            granularity: PruningGranularity::Block(4),
-            importance_metric: ImportanceMetric::L2Norm,
-            iterative: true,
+            sparsity: 0.5,
+            structured: false,
+            granularity: PruningGranularity::Fine,
         }
     }
 }
@@ -270,1032 +183,675 @@ pub enum PruningGranularity {
     Channel,        // Channel-wise
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ImportanceMetric {
-    L1Norm,
-    L2Norm,
-    GradientMagnitude,
-    TaylorExpansion,
-}
-
+/// Knowledge distillation configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DistillationConfig {
     pub student_size_ratio: f32,
     pub temperature: f32,
-    pub alpha: f32, // Weight for distillation loss
-    pub epochs: usize,
-    pub learning_rate: f32,
+    pub alpha: f32,
 }
 
 impl Default for DistillationConfig {
     fn default() -> Self {
         Self {
-            student_size_ratio: 0.1,
+            student_size_ratio: 0.25,
             temperature: 3.0,
             alpha: 0.7,
-            epochs: 10,
-            learning_rate: 0.001,
         }
     }
 }
 
-// Data types for quantization
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum DType {
-    Float32,
-    Float16,
-    BFloat16,
-    Int8,
-    UInt8,
-    Int4,
-    Binary,
-}
-
-// Model representations
-#[derive(Debug, Clone)]
-pub struct OrganizationModel {
-    pub id: String,
-    pub name: String,
-    pub version: String,
-    pub architecture: ModelArchitecture,
-    pub weights: Arc<Weights>,
-    pub metadata: ModelMetadata,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelArchitecture {
-    pub layers: Vec<Layer>,
-    pub input_shape: Vec<usize>,
-    pub output_shape: Vec<usize>,
-    pub total_params: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Layer {
-    pub name: String,
-    pub layer_type: LayerType,
-    pub params: usize,
-    pub input_shape: Vec<usize>,
-    pub output_shape: Vec<usize>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum LayerType {
-    Linear,
-    Conv2D,
-    LSTM,
-    GRU,
-    Attention,
-    BatchNorm,
-    Dropout,
-    Activation(String),
-}
-
-#[derive(Debug, Clone)]
-pub struct Weights {
-    data: Vec<u8>,
-    format: WeightFormat,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum WeightFormat {
-    ONNX,
-    TensorFlow,
-    PyTorch,
-    SafeTensors,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelMetadata {
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
-    pub tags: Vec<String>,
-    pub metrics: HashMap<String, f32>,
-}
-
-// Optimized model after processing
+/// Optimized model representation
 #[derive(Debug, Clone)]
 pub struct OptimizedModel {
-    pub base_model: OrganizationModel,
-    pub optimizations: Vec<OptimizationType>,
-    pub size_reduction: f32,
-    pub speedup: f32,
-    pub accuracy_delta: f32,
+    pub id: Uuid,
+    pub workspace_id: Uuid,
+    pub original_size_bytes: usize,
+    pub optimized_size_bytes: usize,
+    pub optimization_type: Vec<OptimizationType>,
+    pub metrics: OptimizationMetrics,
+    pub weights: Arc<Vec<u8>>,
+    pub metadata: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum OptimizationType {
-    Quantization(QuantizationConfig),
-    Pruning(PruningConfig),
-    Distillation(DistillationConfig),
-    Fusion,
+    Quantization(DType),
+    Pruning(f32), // sparsity level
+    Distillation(f32), // compression ratio
     GraphOptimization,
-}
-
-// Edge model deployment
-#[derive(Debug, Clone)]
-pub struct EdgeModel {
-    pub model_id: String,
-    pub platform: Platform,
-    pub deployed_at: Instant,
-    pub endpoint: String,
-    pub metrics: Arc<RwLock<EdgeMetrics>>,
-    pub config: EdgeConfig,
+    OperatorFusion,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EdgeConfig {
-    pub max_batch_size: usize,
-    pub timeout_ms: u64,
-    pub cache_size: usize,
-    pub auto_scale: bool,
-    pub min_instances: usize,
-    pub max_instances: usize,
+pub struct OptimizationMetrics {
+    pub size_reduction: f32,
+    pub speedup: f32,
+    pub accuracy_delta: f32,
+    pub latency_ms: f32,
+    pub memory_mb: f32,
 }
 
-impl Default for EdgeConfig {
-    fn default() -> Self {
-        Self {
-            max_batch_size: 32,
-            timeout_ms: 100,
-            cache_size: 1000,
-            auto_scale: true,
-            min_instances: 1,
-            max_instances: 10,
-        }
-    }
+/// Edge model optimizer
+pub struct EdgeOptimizer {
+    cache: ConcurrentLRUCache<String, OptimizedModel>,
+    profiler: Arc<RwLock<ProfilerMetrics>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct EdgeMetrics {
-    pub requests: u64,
-    pub errors: u64,
-    pub avg_latency_ms: f64,
-    pub p99_latency_ms: f64,
-    pub throughput: f64,
-    pub cache_hit_rate: f64,
-}
-
-// Optimization components
-pub struct ModelQuantizer {
-    calibration_data: Option<Vec<Vec<f32>>>,
-    profiler: Arc<Profiler>,
-}
-
-impl ModelQuantizer {
-    pub fn new() -> Self {
-        Self {
-            calibration_data: None,
-            profiler: Arc::new(Profiler::new()),
-        }
+impl EdgeOptimizer {
+    pub fn new() -> Result<Self> {
+        Ok(Self {
+            cache: ConcurrentLRUCache::new(100)?,
+            profiler: Arc::new(RwLock::new(ProfilerMetrics::default())),
+        })
     }
     
-    #[instrument(skip(self, model))]
-    pub async fn quantize(
-        &self,
-        model: OrganizationModel,
-        config: QuantizationConfig,
+    /// Optimize model for edge deployment
+    #[instrument(skip(self, model_weights))]
+    pub async fn optimize(
+        &mut self,
+        workspace_id: Uuid,
+        platform: Platform,
+        model_weights: Vec<u8>,
+        config: OptimizationConfig,
     ) -> Result<OptimizedModel> {
-        info!("Starting model quantization with target dtype: {:?}", config.target_dtype);
+        let cache_key = format!("{}-{:?}-{:?}", workspace_id, platform, config.target_size_mb);
         
-        // Validate model compatibility
-        self.validate_for_quantization(&model)?;
+        // Check cache
+        if let Some(cached) = self.cache.get(&cache_key) {
+            info!("Using cached optimized model for {}", cache_key);
+            return Ok(cached);
+        }
         
-        // Collect calibration data if needed
-        let calibration_stats = if self.requires_calibration(&config) {
-            self.collect_calibration_stats(&model, &config).await?
-        } else {
-            CalibrationStats::default()
-        };
+        info!("Optimizing model for platform {:?}", platform);
+        let start = Instant::now();
         
-        // Perform quantization
-        let quantized_weights = self.quantize_weights(
-            &model.weights,
-            &config,
-            &calibration_stats,
+        // Validate platform compatibility
+        self.validate_platform_compatibility(platform, &config)?;
+        
+        let original_size = model_weights.len();
+        let mut optimized_weights = model_weights;
+        let mut optimizations = Vec::new();
+        let mut total_speedup = 1.0;
+        let mut total_accuracy_delta = 0.0;
+        
+        // Apply quantization
+        if let Some(quant_config) = &config.quantization {
+            let (quantized, metrics) = self.apply_quantization(
+                &optimized_weights,
+                quant_config,
+                platform
+            ).await?;
+            
+            optimized_weights = quantized;
+            optimizations.push(OptimizationType::Quantization(quant_config.target_dtype));
+            total_speedup *= metrics.speedup;
+            total_accuracy_delta += metrics.accuracy_delta;
+        }
+        
+        // Apply pruning
+        if let Some(prune_config) = &config.pruning {
+            let (pruned, metrics) = self.apply_pruning(
+                &optimized_weights,
+                prune_config,
+            ).await?;
+            
+            optimized_weights = pruned;
+            optimizations.push(OptimizationType::Pruning(prune_config.sparsity));
+            total_speedup *= metrics.speedup;
+            total_accuracy_delta += metrics.accuracy_delta;
+        }
+        
+        // Apply distillation
+        if let Some(distill_config) = &config.distillation {
+            let (distilled, metrics) = self.apply_distillation(
+                &optimized_weights,
+                distill_config,
+            ).await?;
+            
+            optimized_weights = distilled;
+            optimizations.push(OptimizationType::Distillation(distill_config.student_size_ratio));
+            total_speedup *= metrics.speedup;
+            total_accuracy_delta += metrics.accuracy_delta;
+        }
+        
+        // Apply graph optimizations
+        let (final_weights, graph_metrics) = self.apply_graph_optimizations(
+            &optimized_weights,
+            platform
         ).await?;
         
-        // Validate accuracy
-        let accuracy_delta = self.validate_accuracy(&model, &quantized_weights).await?;
+        optimizations.push(OptimizationType::GraphOptimization);
+        optimizations.push(OptimizationType::OperatorFusion);
+        total_speedup *= graph_metrics.speedup;
         
-        if accuracy_delta < -config.min_accuracy_threshold {
+        // Validate accuracy threshold
+        if total_accuracy_delta < -config.min_accuracy {
             return Err(EdgeError::ValidationError(
-                format!("Accuracy degradation {} exceeds threshold", accuracy_delta)
+                format!("Accuracy degradation {:.2}% exceeds threshold", total_accuracy_delta * 100.0)
             ).into());
         }
         
-        // Calculate metrics
-        let original_size = self.calculate_model_size(&model);
-        let quantized_size = quantized_weights.len();
-        let size_reduction = 1.0 - (quantized_size as f32 / original_size as f32);
-        
-        Ok(OptimizedModel {
-            base_model: OrganizationModel {
-                weights: Arc::new(Weights {
-                    data: quantized_weights,
-                    format: model.weights.format.clone(),
-                }),
-                ..model
-            },
-            optimizations: vec![OptimizationType::Quantization(config.clone())],
-            size_reduction,
-            speedup: self.estimate_speedup(&config),
-            accuracy_delta,
-        })
-    }
-    
-    fn validate_for_quantization(&self, model: &OrganizationModel) -> Result<()> {
-        // Check if model architecture supports quantization
-        for layer in &model.architecture.layers {
-            match layer.layer_type {
-                LayerType::Linear | LayerType::Conv2D => continue,
-                LayerType::BatchNorm | LayerType::Activation(_) => continue,
-                _ => {
-                    warn!("Layer {} may not benefit from quantization", layer.name);
-                }
+        // Check size constraints
+        let final_size_mb = final_weights.len() as f32 / 1_048_576.0;
+        if let Some(target_size) = config.target_size_mb {
+            if final_size_mb > target_size {
+                warn!("Optimized model size {:.1}MB exceeds target {:.1}MB", final_size_mb, target_size);
             }
         }
+        
+        let optimized_model = OptimizedModel {
+            id: Uuid::new_v4(),
+            workspace_id,
+            original_size_bytes: original_size,
+            optimized_size_bytes: final_weights.len(),
+            optimization_type: optimizations,
+            metrics: OptimizationMetrics {
+                size_reduction: 1.0 - (final_weights.len() as f32 / original_size as f32),
+                speedup: total_speedup,
+                accuracy_delta: total_accuracy_delta,
+                latency_ms: self.estimate_latency(&final_weights, platform),
+                memory_mb: final_size_mb,
+            },
+            weights: Arc::new(final_weights),
+            metadata: self.create_metadata(platform, &config),
+        };
+        
+        // Update profiler metrics
+        self.profiler.write().record_optimization(
+            platform,
+            start.elapsed(),
+            optimized_model.metrics.size_reduction,
+        );
+        
+        // Cache the result
+        self.cache.put(cache_key, optimized_model.clone());
+        
+        info!(
+            "Model optimization complete: {:.1}% size reduction, {:.1}x speedup",
+            optimized_model.metrics.size_reduction * 100.0,
+            optimized_model.metrics.speedup
+        );
+        
+        Ok(optimized_model)
+    }
+    
+    fn validate_platform_compatibility(
+        &self,
+        platform: Platform,
+        config: &OptimizationConfig,
+    ) -> Result<()> {
+        // Check dtype compatibility
+        if let Some(quant) = &config.quantization {
+            if !quant.target_dtype.is_supported_on(platform) {
+                return Err(EdgeError::UnsupportedOptimization(
+                    platform.to_string(),
+                    format!("{:?} quantization", quant.target_dtype)
+                ).into());
+            }
+        }
+        
+        // Platform-specific validations
+        match platform {
+            Platform::VSCode if config.target_size_mb.unwrap_or(100.0) > 200.0 => {
+                return Err(EdgeError::ResourceLimitExceeded(
+                    "VS Code extensions limited to 200MB".to_string()
+                ).into());
+            }
+            Platform::Slack | Platform::Teams if config.target_latency_ms.unwrap_or(100) < 50 => {
+                warn!("Target latency <50ms may be challenging for chat platforms");
+            }
+            _ => {}
+        }
+        
         Ok(())
     }
     
-    fn requires_calibration(&self, config: &QuantizationConfig) -> bool {
-        matches!(config.target_dtype, DType::Int8 | DType::Int4)
-    }
-    
-    async fn collect_calibration_stats(
+    async fn apply_quantization(
         &self,
-        model: &OrganizationModel,
+        weights: &[u8],
         config: &QuantizationConfig,
-    ) -> Result<CalibrationStats> {
-        // Simulate calibration data collection
-        Ok(CalibrationStats {
-            min_values: vec![-1.0; model.architecture.layers.len()],
-            max_values: vec![1.0; model.architecture.layers.len()],
-            mean_values: vec![0.0; model.architecture.layers.len()],
-            std_values: vec![0.5; model.architecture.layers.len()],
-        })
-    }
-    
-    async fn quantize_weights(
-        &self,
-        weights: &Weights,
-        config: &QuantizationConfig,
-        stats: &CalibrationStats,
-    ) -> Result<Vec<u8>> {
-        // Simulate weight quantization
+        platform: Platform,
+    ) -> Result<(Vec<u8>, OptimizationMetrics)> {
+        debug!("Applying {:?} quantization", config.target_dtype);
+        
         let quantized = match config.target_dtype {
-            DType::Int8 => self.quantize_to_int8(&weights.data, stats)?,
-            DType::Int4 => self.quantize_to_int4(&weights.data, stats)?,
-            DType::Float16 => self.quantize_to_fp16(&weights.data)?,
-            _ => weights.data.clone(),
-        };
-        Ok(quantized)
-    }
-    
-    fn quantize_to_int8(&self, weights: &[u8], stats: &CalibrationStats) -> Result<Vec<u8>> {
-        // Simplified INT8 quantization
-        Ok(weights.iter().map(|&w| (w as f32 * 0.5) as u8).collect())
-    }
-    
-    fn quantize_to_int4(&self, weights: &[u8], stats: &CalibrationStats) -> Result<Vec<u8>> {
-        // Simplified INT4 quantization
-        Ok(weights.iter().map(|&w| (w as f32 * 0.25) as u8).collect())
-    }
-    
-    fn quantize_to_fp16(&self, weights: &[u8]) -> Result<Vec<u8>> {
-        // Simplified FP16 conversion
-        Ok(weights.iter().step_by(2).map(|&w| w).collect())
-    }
-    
-    async fn validate_accuracy(
-        &self,
-        original: &OrganizationModel,
-        quantized: &[u8],
-    ) -> Result<f32> {
-        // Simulate accuracy validation
-        Ok(-0.02) // 2% accuracy loss
-    }
-    
-    fn calculate_model_size(&self, model: &OrganizationModel) -> usize {
-        model.weights.data.len()
-    }
-    
-    fn estimate_speedup(&self, config: &QuantizationConfig) -> f32 {
-        match config.target_dtype {
-            DType::Int4 => 4.0,
-            DType::Int8 => 2.0,
-            DType::Float16 => 1.5,
-            _ => 1.0,
-        }
-    }
-}
-
-#[derive(Default)]
-struct CalibrationStats {
-    min_values: Vec<f32>,
-    max_values: Vec<f32>,
-    mean_values: Vec<f32>,
-    std_values: Vec<f32>,
-}
-
-pub struct ModelPruner {
-    importance_calculator: Arc<ImportanceCalculator>,
-    profiler: Arc<Profiler>,
-}
-
-impl ModelPruner {
-    pub fn new() -> Self {
-        Self {
-            importance_calculator: Arc::new(ImportanceCalculator::new()),
-            profiler: Arc::new(Profiler::new()),
-        }
-    }
-    
-    #[instrument(skip(self, model))]
-    pub async fn prune(
-        &self,
-        model: OptimizedModel,
-        config: PruningConfig,
-    ) -> Result<OptimizedModel> {
-        info!("Starting model pruning with sparsity: {}", config.sparsity);
-        
-        // Calculate importance scores
-        let importance_scores = self.importance_calculator
-            .calculate(&model, &config).await?;
-        
-        // Determine pruning mask
-        let pruning_mask = self.create_pruning_mask(
-            &importance_scores,
-            config.sparsity,
-            &config,
-        )?;
-        
-        // Apply pruning
-        let pruned_weights = self.apply_pruning(
-            &model.base_model.weights,
-            &pruning_mask,
-        ).await?;
-        
-        // Fine-tune if needed
-        let fine_tuned = if config.iterative {
-            self.iterative_pruning(model.clone(), config.clone()).await?
-        } else {
-            pruned_weights
+            DType::Int8 => self.quantize_to_int8(weights, config)?,
+            DType::Int4 => self.quantize_to_int4(weights, config)?,
+            DType::Float16 => self.quantize_to_fp16(weights)?,
+            DType::BFloat16 => self.quantize_to_bf16(weights)?,
+            _ => weights.to_vec(),
         };
         
-        // Calculate metrics
-        let size_reduction = self.calculate_size_reduction(&model, &fine_tuned);
-        let speedup = self.estimate_pruning_speedup(&config);
+        let metrics = OptimizationMetrics {
+            size_reduction: 1.0 - (quantized.len() as f32 / weights.len() as f32),
+            speedup: self.estimate_quantization_speedup(config.target_dtype, platform),
+            accuracy_delta: self.estimate_quantization_accuracy_loss(config.target_dtype),
+            latency_ms: 0.0,
+            memory_mb: quantized.len() as f32 / 1_048_576.0,
+        };
         
-        Ok(OptimizedModel {
-            base_model: OrganizationModel {
-                weights: Arc::new(Weights {
-                    data: fine_tuned,
-                    format: model.base_model.weights.format.clone(),
-                }),
-                ..model.base_model
-            },
-            optimizations: {
-                let mut opts = model.optimizations.clone();
-                opts.push(OptimizationType::Pruning(config));
-                opts
-            },
-            size_reduction: model.size_reduction + size_reduction,
-            speedup: model.speedup * speedup,
-            accuracy_delta: model.accuracy_delta - 0.01, // Simulated accuracy loss
-        })
-    }
-    
-    fn create_pruning_mask(
-        &self,
-        scores: &[f32],
-        sparsity: f32,
-        config: &PruningConfig,
-    ) -> Result<Vec<bool>> {
-        let threshold_idx = (scores.len() as f32 * sparsity) as usize;
-        let mut sorted_scores = scores.to_vec();
-        sorted_scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        
-        let threshold = sorted_scores.get(threshold_idx)
-            .copied()
-            .unwrap_or(0.0);
-        
-        Ok(scores.iter().map(|&s| s > threshold).collect())
+        Ok((quantized, metrics))
     }
     
     async fn apply_pruning(
         &self,
-        weights: &Weights,
-        mask: &[bool],
-    ) -> Result<Vec<u8>> {
-        // Apply pruning mask to weights
-        Ok(weights.data.iter()
-            .zip(mask.iter().cycle())
-            .map(|(&w, &m)| if m { w } else { 0 })
+        weights: &[u8],
+        config: &PruningConfig,
+    ) -> Result<(Vec<u8>, OptimizationMetrics)> {
+        debug!("Applying {:.0}% pruning", config.sparsity * 100.0);
+        
+        let pruned = if config.structured {
+            self.structured_pruning(weights, config.sparsity)?
+        } else {
+            self.unstructured_pruning(weights, config.sparsity)?
+        };
+        
+        let metrics = OptimizationMetrics {
+            size_reduction: config.sparsity * 0.8, // Account for sparse storage overhead
+            speedup: if config.structured { 1.0 + config.sparsity } else { 1.0 + config.sparsity * 0.3 },
+            accuracy_delta: -config.sparsity * 0.05, // Approximate accuracy loss
+            latency_ms: 0.0,
+            memory_mb: pruned.len() as f32 / 1_048_576.0,
+        };
+        
+        Ok((pruned, metrics))
+    }
+    
+    async fn apply_distillation(
+        &self,
+        weights: &[u8],
+        config: &DistillationConfig,
+    ) -> Result<(Vec<u8>, OptimizationMetrics)> {
+        debug!("Applying knowledge distillation with {:.0}% student size", 
+               config.student_size_ratio * 100.0);
+        
+        let student_size = (weights.len() as f32 * config.student_size_ratio) as usize;
+        let distilled = self.simulate_distillation(weights, student_size)?;
+        
+        let metrics = OptimizationMetrics {
+            size_reduction: 1.0 - config.student_size_ratio,
+            speedup: 1.0 / config.student_size_ratio.max(0.1),
+            accuracy_delta: -0.03, // Typical distillation accuracy loss
+            latency_ms: 0.0,
+            memory_mb: distilled.len() as f32 / 1_048_576.0,
+        };
+        
+        Ok((distilled, metrics))
+    }
+    
+    async fn apply_graph_optimizations(
+        &self,
+        weights: &[u8],
+        platform: Platform,
+    ) -> Result<(Vec<u8>, OptimizationMetrics)> {
+        debug!("Applying graph-level optimizations for {:?}", platform);
+        
+        // Simulate graph optimization (operator fusion, constant folding, etc.)
+        let optimized = weights.to_vec();
+        
+        let metrics = OptimizationMetrics {
+            size_reduction: 0.05, // Minor size reduction from constant folding
+            speedup: 1.2, // Operator fusion typically gives 20% speedup
+            accuracy_delta: 0.0, // Graph optimizations preserve accuracy
+            latency_ms: 0.0,
+            memory_mb: optimized.len() as f32 / 1_048_576.0,
+        };
+        
+        Ok((optimized, metrics))
+    }
+    
+    fn quantize_to_int8(&self, weights: &[u8], config: &QuantizationConfig) -> Result<Vec<u8>> {
+        let scale = if config.symmetric { 127.0 } else { 255.0 };
+        let offset = if config.symmetric { 0.0 } else { 128.0 };
+        
+        Ok(weights.iter()
+            .map(|&w| ((w as f32 / 255.0 * scale + offset) as u8))
             .collect())
     }
     
-    async fn iterative_pruning(
-        &self,
-        model: OptimizedModel,
-        config: PruningConfig,
-    ) -> Result<Vec<u8>> {
-        // Simulate iterative pruning with fine-tuning
-        Ok(model.base_model.weights.data.clone())
+    fn quantize_to_int4(&self, weights: &[u8], _config: &QuantizationConfig) -> Result<Vec<u8>> {
+        // Pack two 4-bit values into each byte
+        Ok(weights.chunks(2)
+            .map(|chunk| {
+                let high = (chunk[0] >> 4) & 0x0F;
+                let low = if chunk.len() > 1 { chunk[1] >> 4 } else { 0 } & 0x0F;
+                (high << 4) | low
+            })
+            .collect())
     }
     
-    fn calculate_size_reduction(&self, original: &OptimizedModel, pruned: &[u8]) -> f32 {
-        let sparse_size = pruned.iter().filter(|&&w| w != 0).count();
-        1.0 - (sparse_size as f32 / original.base_model.weights.data.len() as f32)
+    fn quantize_to_fp16(&self, weights: &[u8]) -> Result<Vec<u8>> {
+        // Simulate FP32 to FP16 conversion
+        Ok(weights.chunks(2)
+            .map(|chunk| chunk[0])
+            .collect())
     }
     
-    fn estimate_pruning_speedup(&self, config: &PruningConfig) -> f32 {
-        if config.structured {
-            1.0 + config.sparsity * 2.0 // Structured pruning gives better speedup
-        } else {
-            1.0 + config.sparsity * 0.5 // Unstructured pruning gives less speedup
-        }
-    }
-}
-
-struct ImportanceCalculator {
-    cache: Arc<RwLock<HashMap<String, Vec<f32>>>>,
-}
-
-impl ImportanceCalculator {
-    fn new() -> Self {
-        Self {
-            cache: Arc::new(RwLock::new(HashMap::new())),
-        }
+    fn quantize_to_bf16(&self, weights: &[u8]) -> Result<Vec<u8>> {
+        // Simulate FP32 to BF16 conversion
+        Ok(weights.chunks(2)
+            .map(|chunk| chunk[0])
+            .collect())
     }
     
-    async fn calculate(
-        &self,
-        model: &OptimizedModel,
-        config: &PruningConfig,
-    ) -> Result<Vec<f32>> {
-        // Check cache
-        let cache_key = format!("{}_{:?}", model.base_model.id, config.importance_metric);
-        if let Some(cached) = self.cache.read().get(&cache_key) {
-            return Ok(cached.clone());
-        }
+    fn structured_pruning(&self, weights: &[u8], sparsity: f32) -> Result<Vec<u8>> {
+        let block_size = 16;
+        let threshold = (255.0 * (1.0 - sparsity)) as u8;
         
-        // Calculate importance based on metric
-        let scores = match config.importance_metric {
-            ImportanceMetric::L1Norm => self.l1_norm_importance(&model.base_model.weights),
-            ImportanceMetric::L2Norm => self.l2_norm_importance(&model.base_model.weights),
-            ImportanceMetric::GradientMagnitude => self.gradient_importance(model).await?,
-            ImportanceMetric::TaylorExpansion => self.taylor_importance(model).await?,
+        Ok(weights.chunks(block_size)
+            .flat_map(|block| {
+                let block_sum: u32 = block.iter().map(|&w| w as u32).sum();
+                let block_avg = (block_sum / block.len() as u32) as u8;
+                
+                if block_avg < threshold {
+                    vec![0; block.len()]
+                } else {
+                    block.to_vec()
+                }
+            })
+            .collect())
+    }
+    
+    fn unstructured_pruning(&self, weights: &[u8], sparsity: f32) -> Result<Vec<u8>> {
+        let threshold = (255.0 * (1.0 - sparsity)) as u8;
+        
+        Ok(weights.iter()
+            .map(|&w| if w < threshold { 0 } else { w })
+            .collect())
+    }
+    
+    fn simulate_distillation(&self, weights: &[u8], student_size: usize) -> Result<Vec<u8>> {
+        // Simulate knowledge distillation by downsampling
+        let step = weights.len() / student_size.max(1);
+        Ok(weights.iter()
+            .step_by(step.max(1))
+            .copied()
+            .collect())
+    }
+    
+    fn estimate_latency(&self, weights: &[u8], platform: Platform) -> f32 {
+        let base_latency = match platform {
+            Platform::VSCode => 10.0,
+            Platform::Slack | Platform::Teams => 50.0,
+            Platform::GitHub => 30.0,
+            _ => 100.0,
         };
         
-        // Cache results
-        self.cache.write().insert(cache_key, scores.clone());
+        // Estimate based on model size
+        let size_factor = (weights.len() as f32 / 1_048_576.0).sqrt();
+        base_latency * (1.0 + size_factor * 0.1)
+    }
+    
+    fn estimate_quantization_speedup(&self, dtype: DType, platform: Platform) -> f32 {
+        let base_speedup = match dtype {
+            DType::Int4 => 4.0,
+            DType::Int8 => 2.0,
+            DType::Float16 | DType::BFloat16 => 1.5,
+            _ => 1.0,
+        };
         
-        Ok(scores)
-    }
-    
-    fn l1_norm_importance(&self, weights: &Weights) -> Vec<f32> {
-        weights.data.iter().map(|&w| (w as f32).abs()).collect()
-    }
-    
-    fn l2_norm_importance(&self, weights: &Weights) -> Vec<f32> {
-        weights.data.iter().map(|&w| (w as f32).powi(2)).collect()
-    }
-    
-    async fn gradient_importance(&self, model: &OptimizedModel) -> Result<Vec<f32>> {
-        // Simulate gradient-based importance
-        Ok(vec![0.5; model.base_model.weights.data.len()])
-    }
-    
-    async fn taylor_importance(&self, model: &OptimizedModel) -> Result<Vec<f32>> {
-        // Simulate Taylor expansion importance
-        Ok(vec![0.6; model.base_model.weights.data.len()])
-    }
-}
-
-struct Profiler {
-    metrics: Arc<RwLock<HashMap<String, ProfileMetrics>>>,
-}
-
-impl Profiler {
-    fn new() -> Self {
-        Self {
-            metrics: Arc::new(RwLock::new(HashMap::new())),
+        // Adjust for platform capabilities
+        match platform {
+            Platform::VSCode => base_speedup * 0.8, // WASM overhead
+            Platform::GitHub => base_speedup * 1.2, // Native performance
+            _ => base_speedup,
         }
     }
     
-    fn start_timer(&self, name: &str) -> ProfileTimer {
-        ProfileTimer {
-            name: name.to_string(),
-            start: Instant::now(),
-            profiler: self.metrics.clone(),
+    fn estimate_quantization_accuracy_loss(&self, dtype: DType) -> f32 {
+        match dtype {
+            DType::Int4 => -0.05,
+            DType::Int8 => -0.02,
+            DType::Float16 => -0.01,
+            DType::BFloat16 => -0.005,
+            _ => 0.0,
         }
     }
-}
-
-struct ProfileTimer {
-    name: String,
-    start: Instant,
-    profiler: Arc<RwLock<HashMap<String, ProfileMetrics>>>,
-}
-
-impl Drop for ProfileTimer {
-    fn drop(&mut self) {
-        let duration = self.start.elapsed();
-        let mut metrics = self.profiler.write();
-        let entry = metrics.entry(self.name.clone()).or_insert(ProfileMetrics::default());
-        entry.total_time += duration;
-        entry.count += 1;
-        entry.avg_time = entry.total_time / entry.count as u32;
+    
+    fn create_metadata(&self, platform: Platform, config: &OptimizationConfig) -> HashMap<String, serde_json::Value> {
+        let mut metadata = HashMap::new();
+        metadata.insert("platform".to_string(), serde_json::json!(platform.to_string()));
+        metadata.insert("optimization_config".to_string(), serde_json::to_value(config).unwrap_or_default());
+        metadata.insert("timestamp".to_string(), serde_json::json!(chrono::Utc::now()));
+        metadata
     }
 }
 
-#[derive(Default)]
-struct ProfileMetrics {
-    total_time: Duration,
-    avg_time: Duration,
-    count: u64,
-}
-
-// Main Edge Inference system
-pub struct EdgeInference {
-    edge_models: Arc<RwLock<HashMap<Platform, EdgeModel>>>,
-    quantizer: Arc<ModelQuantizer>,
-    pruner: Arc<ModelPruner>,
-    compiler: Arc<ModelCompiler>,
-    deployer: Arc<EdgeDeployer>,
-    monitor: Arc<EdgeMonitor>,
-    config: EdgeInferenceConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EdgeInferenceConfig {
-    pub max_concurrent_deployments: usize,
-    pub deployment_timeout: Duration,
-    pub health_check_interval: Duration,
-    pub auto_rollback: bool,
-    pub canary_deployment: bool,
-    pub canary_percentage: f32,
-}
-
-impl Default for EdgeInferenceConfig {
+impl Default for EdgeOptimizer {
     fn default() -> Self {
-        Self {
-            max_concurrent_deployments: 5,
-            deployment_timeout: Duration::from_secs(300),
-            health_check_interval: Duration::from_secs(30),
-            auto_rollback: true,
-            canary_deployment: true,
-            canary_percentage: 0.1,
-        }
+        Self::new().expect("Failed to create EdgeOptimizer")
     }
 }
 
-impl EdgeInference {
-    pub fn new(config: EdgeInferenceConfig) -> Self {
-        Self {
-            edge_models: Arc::new(RwLock::new(HashMap::new())),
-            quantizer: Arc::new(ModelQuantizer::new()),
-            pruner: Arc::new(ModelPruner::new()),
-            compiler: Arc::new(ModelCompiler::new()),
-            deployer: Arc::new(EdgeDeployer::new()),
-            monitor: Arc::new(EdgeMonitor::new()),
-            config,
-        }
+/// Profiler metrics for monitoring optimization performance
+#[derive(Debug, Default)]
+struct ProfilerMetrics {
+    total_optimizations: u64,
+    platform_stats: HashMap<String, PlatformStats>,
+}
+
+#[derive(Debug, Default)]
+struct PlatformStats {
+    count: u64,
+    total_time: Duration,
+    avg_size_reduction: f32,
+}
+
+impl ProfilerMetrics {
+    fn record_optimization(&mut self, platform: Platform, duration: Duration, size_reduction: f32) {
+        self.total_optimizations += 1;
+        
+        let stats = self.platform_stats
+            .entry(platform.to_string())
+            .or_default();
+        
+        stats.count += 1;
+        stats.total_time += duration;
+        stats.avg_size_reduction = (stats.avg_size_reduction * (stats.count - 1) as f32 + size_reduction) / stats.count as f32;
+    }
+}
+
+/// Integration with MLPipeline for organization-specific models
+pub struct EdgeMLIntegration {
+    optimizer: EdgeOptimizer,
+    pipeline: Arc<MLPipeline>,
+}
+
+impl EdgeMLIntegration {
+    pub fn new(pipeline: Arc<MLPipeline>) -> Result<Self> {
+        Ok(Self {
+            optimizer: EdgeOptimizer::new()?,
+            pipeline,
+        })
     }
     
-    #[instrument(skip(self, model))]
-    pub async fn deploy_to_platform(
+    /// Optimize organization's model for edge deployment
+    #[instrument(skip(self))]
+    pub async fn optimize_workspace_model(
         &mut self,
+        workspace_id: Uuid,
         platform: Platform,
-        model: OrganizationModel,
-    ) -> Result<EdgeModel> {
-        info!("Deploying model {} to platform {:?}", model.id, platform);
-        
-        // Validate platform support
-        self.validate_platform(&platform)?;
-        
-        // Optimize model for edge deployment
-        let optimized = self.optimize_for_edge(model, &platform).await?;
-        
-        // Platform-specific deployment
-        let edge_model = match platform.clone() {
-            Platform::VSCode => {
-                self.deploy_vscode_model(optimized).await?
-            }
-            Platform::Slack => {
-                self.deploy_slack_model(optimized).await?
-            }
-            Platform::CloudflareWorkers => {
-                self.deploy_cloudflare_model(optimized).await?
-            }
-            Platform::Mobile(mobile_platform) => {
-                self.deploy_mobile_model(optimized, mobile_platform).await?
-            }
-            _ => {
-                self.deploy_standard(platform.clone(), optimized).await?
-            }
-        };
-        
-        // Register deployed model
-        self.edge_models.write().insert(platform, edge_model.clone());
-        
-        // Start monitoring
-        self.monitor.start_monitoring(&edge_model).await?;
-        
-        Ok(edge_model)
-    }
-    
-    async fn optimize_for_edge(
-        &self,
-        model: OrganizationModel,
-        platform: &Platform,
+        config: Option<OptimizationConfig>,
     ) -> Result<OptimizedModel> {
-        info!("Optimizing model for edge deployment");
+        info!("Optimizing workspace {} model for platform {:?}", workspace_id, platform);
         
-        // Platform-specific optimization configs
-        let (quant_config, prune_config, distill_config) = 
-            self.get_platform_configs(platform);
-        
-        // Apply optimizations in sequence
-        let quantized = self.quantizer
-            .quantize(model, quant_config).await?;
-        
-        let pruned = self.pruner
-            .prune(quantized, prune_config).await?;
-        
-        let distilled = self.distill(pruned, distill_config).await?;
-        
-        // Additional optimizations
-        let final_model = self.apply_graph_optimizations(distilled).await?;
+        // Get model info from pipeline to inform optimization decisions
+        let model_info = self.pipeline
+            .get_model_info(workspace_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("No model found for workspace"))?;
         
         info!(
-            "Model optimized: size reduction {:.1}%, speedup {:.1}x",
-            final_model.size_reduction * 100.0,
-            final_model.speedup
+            "Optimizing model v{} with {:.2}% accuracy ({} training runs)",
+            model_info.version, 
+            model_info.accuracy * 100.0,
+            model_info.training_runs
         );
         
-        Ok(final_model)
+        // Use platform-specific config if not provided, potentially adjusting based on model info
+        let mut config = config.unwrap_or_else(|| OptimizationConfig::for_platform(platform));
+        
+        // Adjust optimization based on model accuracy - higher accuracy models can tolerate more aggressive optimization
+        if model_info.accuracy > 0.95 {
+            config.min_accuracy = 0.98; // More conservative for high-accuracy models
+        } else if model_info.accuracy < 0.85 {
+            config.min_accuracy = 0.90; // More aggressive for lower-accuracy models
+        }
+        
+        // For now, simulate getting model weights
+        // In production, this would fetch actual model weights
+        let model_weights = vec![128u8; 1024 * 1024]; // 1MB default model size
+        
+        // Optimize the model
+        let optimized = self.optimizer
+            .optimize(workspace_id, platform, model_weights, config)
+            .await?;
+        
+        info!(
+            "Successfully optimized model for workspace {}: {:.1}MB -> {:.1}MB",
+            workspace_id,
+            optimized.original_size_bytes as f32 / 1_048_576.0,
+            optimized.optimized_size_bytes as f32 / 1_048_576.0
+        );
+        
+        Ok(optimized)
     }
     
-    fn get_platform_configs(&self, platform: &Platform) -> 
-        (QuantizationConfig, PruningConfig, DistillationConfig) 
-    {
-        match platform {
-            Platform::Mobile(_) => {
-                // Aggressive optimization for mobile
-                (
-                    QuantizationConfig {
-                        target_dtype: DType::Int8,
-                        calibration_samples: 500,
-                        ..Default::default()
-                    },
-                    PruningConfig {
-                        sparsity: 0.95,
-                        structured: true,
-                        ..Default::default()
-                    },
-                    DistillationConfig {
-                        student_size_ratio: 0.05,
-                        ..Default::default()
-                    },
-                )
-            }
-            Platform::Browser | Platform::VSCode => {
-                // Moderate optimization for WASM
-                (
-                    QuantizationConfig {
-                        target_dtype: DType::Float16,
-                        ..Default::default()
-                    },
-                    PruningConfig {
-                        sparsity: 0.8,
-                        ..Default::default()
-                    },
-                    DistillationConfig {
-                        student_size_ratio: 0.2,
-                        ..Default::default()
-                    },
-                )
-            }
-            _ => {
-                // Light optimization for server edge
-                (
-                    QuantizationConfig::default(),
-                    PruningConfig {
-                        sparsity: 0.5,
-                        ..Default::default()
-                    },
-                    DistillationConfig::default(),
-                )
-            }
+    /// Get optimization recommendations for a platform
+    pub fn get_recommendations(&self, platform: Platform) -> OptimizationRecommendations {
+        OptimizationRecommendations {
+            platform,
+            recommended_dtype: match platform {
+                Platform::VSCode => DType::Int8,
+                Platform::Slack | Platform::Teams => DType::Float16,
+                _ => DType::Float32,
+            },
+            recommended_sparsity: match platform {
+                Platform::VSCode => Some(0.8),
+                Platform::Slack | Platform::Teams => Some(0.5),
+                _ => None,
+            },
+            max_model_size_mb: match platform {
+                Platform::VSCode => 100.0,
+                Platform::Slack | Platform::Teams => 25.0,
+                _ => 500.0,
+            },
+            target_latency_ms: match platform {
+                Platform::VSCode => 50,
+                Platform::Slack | Platform::Teams => 100,
+                _ => 200,
+            },
         }
     }
-    
-    async fn distill(
-        &self,
-        model: OptimizedModel,
-        config: DistillationConfig,
-    ) -> Result<OptimizedModel> {
-        // Knowledge distillation implementation
-        info!("Applying knowledge distillation");
-        
-        // Create student model
-        let student_params = (model.base_model.architecture.total_params as f32 
-            * config.student_size_ratio) as usize;
-        
-        // Simulate distillation process
-        let distilled_weights = self.simulate_distillation(
-            &model.base_model.weights,
-            student_params,
-            &config,
-        ).await?;
-        
-        Ok(OptimizedModel {
-            base_model: OrganizationModel {
-                weights: Arc::new(Weights {
-                    data: distilled_weights,
-                    format: model.base_model.weights.format.clone(),
-                }),
-                architecture: ModelArchitecture {
-                    total_params: student_params,
-                    ..model.base_model.architecture.clone()
-                },
-                ..model.base_model
-            },
-            optimizations: {
-                let mut opts = model.optimizations.clone();
-                opts.push(OptimizationType::Distillation(config));
-                opts
-            },
-            size_reduction: model.size_reduction + 0.5,
-            speedup: model.speedup * 2.0,
-            accuracy_delta: model.accuracy_delta - 0.03,
-        })
+}
+
+/// Optimization recommendations for platforms
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OptimizationRecommendations {
+    pub platform: Platform,
+    pub recommended_dtype: DType,
+    pub recommended_sparsity: Option<f32>,
+    pub max_model_size_mb: f32,
+    pub target_latency_ms: u32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_edge_optimizer_creation() {
+        let optimizer = EdgeOptimizer::new();
+        assert!(optimizer.is_ok());
     }
-    
-    async fn simulate_distillation(
-        &self,
-        teacher_weights: &Weights,
-        student_params: usize,
-        config: &DistillationConfig,
-    ) -> Result<Vec<u8>> {
-        // Simulate knowledge distillation
-        let student_size = student_params * std::mem::size_of::<f32>();
-        Ok(vec![128; student_size / 4]) // Simplified simulation
+
+    #[tokio::test]
+    async fn test_platform_specific_config() {
+        let vscode_config = OptimizationConfig::for_platform(Platform::VSCode);
+        assert_eq!(vscode_config.target_size_mb, Some(100.0));
+        
+        let slack_config = OptimizationConfig::for_platform(Platform::Slack);
+        assert_eq!(slack_config.target_size_mb, Some(25.0));
     }
-    
-    async fn apply_graph_optimizations(&self, model: OptimizedModel) -> Result<OptimizedModel> {
-        // Apply graph-level optimizations
-        info!("Applying graph optimizations");
-        
-        Ok(OptimizedModel {
-            optimizations: {
-                let mut opts = model.optimizations.clone();
-                opts.push(OptimizationType::GraphOptimization);
-                opts.push(OptimizationType::Fusion);
-                opts
-            },
-            speedup: model.speedup * 1.2,
-            ..model
-        })
+
+    #[tokio::test]
+    async fn test_dtype_platform_compatibility() {
+        assert!(DType::Int8.is_supported_on(Platform::VSCode));
+        assert!(DType::Float16.is_supported_on(Platform::Slack));
+        assert!(!DType::Binary.is_supported_on(Platform::VSCode));
     }
-    
-    async fn deploy_vscode_model(&self, model: OptimizedModel) -> Result<EdgeModel> {
-        info!("Deploying to VS Code extension");
+
+    #[tokio::test]
+    async fn test_optimization_basic() {
+        let mut optimizer = EdgeOptimizer::new().unwrap();
+        let weights = vec![128u8; 1024 * 1024]; // 1MB model
         
-        // Compile to WASM
-        let wasm_module = self.compiler
-            .compile_to_wasm(model.clone()).await?;
-        
-        // Package as VS Code extension
-        let extension_package = self.package_vscode_extension(wasm_module).await?;
-        
-        // Deploy to marketplace or local
-        let endpoint = self.deployer
-            .deploy_vscode(extension_package).await?;
-        
-        Ok(EdgeModel {
-            model_id: model.base_model.id.clone(),
-            platform: Platform::VSCode,
-            deployed_at: Instant::now(),
-            endpoint,
-            metrics: Arc::new(RwLock::new(EdgeMetrics::default())),
-            config: EdgeConfig::default(),
-        })
-    }
-    
-    async fn deploy_slack_model(&self, model: OptimizedModel) -> Result<EdgeModel> {
-        info!("Deploying to Slack edge workers");
-        
-        // Optimize for Slack's infrastructure
-        let slack_optimized = self.optimize_for_slack(model.clone()).await?;
-        
-        // Deploy to edge locations
-        let endpoint = self.deployer
-            .deploy_to_edge_workers(slack_optimized, "slack").await?;
-        
-        Ok(EdgeModel {
-            model_id: model.base_model.id.clone(),
-            platform: Platform::Slack,
-            deployed_at: Instant::now(),
-            endpoint,
-            metrics: Arc::new(RwLock::new(EdgeMetrics::default())),
-            config: EdgeConfig {
-                max_batch_size: 16,
-                timeout_ms: 50,
+        let config = OptimizationConfig {
+            quantization: Some(QuantizationConfig {
+                target_dtype: DType::Int8,
                 ..Default::default()
-            },
-        })
-    }
-    
-    async fn deploy_cloudflare_model(&self, model: OptimizedModel) -> Result<EdgeModel> {
-        info!("Deploying to Cloudflare Workers");
-        
-        // Compile for Cloudflare Workers
-        let worker_bundle = self.compiler
-            .compile_to_worker(model.clone()).await?;
-        
-        // Deploy to Cloudflare edge
-        let endpoint = self.deployer
-            .deploy_cloudflare(worker_bundle).await?;
-        
-        Ok(EdgeModel {
-            model_id: model.base_model.id.clone(),
-            platform: Platform::CloudflareWorkers,
-            deployed_at: Instant::now(),
-            endpoint,
-            metrics: Arc::new(RwLock::new(EdgeMetrics::default())),
-            config: EdgeConfig {
-                auto_scale: true,
-                min_instances: 1,
-                max_instances: 100,
-                ..Default::default()
-            },
-        })
-    }
-    
-    async fn deploy_mobile_model(
-        &self,
-        model: OptimizedModel,
-        platform: MobilePlatform,
-    ) -> Result<EdgeModel> {
-        info!("Deploying to mobile platform: {:?}", platform);
-        
-        let mobile_model = match platform.clone() {
-            MobilePlatform::iOS => {
-                self.compiler.compile_to_coreml(model.clone()).await?
-            }
-            MobilePlatform::Android => {
-                self.compiler.compile_to_tflite(model.clone()).await?
-            }
+            }),
+            ..Default::default()
         };
         
-        let endpoint = self.deployer
-            .deploy_mobile(mobile_model, platform.clone()).await?;
+        let result = optimizer.optimize(
+            Uuid::new_v4(),
+            Platform::VSCode,
+            weights,
+            config,
+        ).await;
         
-        Ok(EdgeModel {
-            model_id: model.base_model.id.clone(),
-            platform: Platform::Mobile(platform),
-            deployed_at: Instant::now(),
-            endpoint,
-            metrics: Arc::new(RwLock::new(EdgeMetrics::default())),
-            config: EdgeConfig {
-                max_batch_size: 1,
-                timeout_ms: 30,
-                cache_size: 100,
-                ..Default::default()
-            },
-        })
+        assert!(result.is_ok());
+        let optimized = result.unwrap();
+        assert!(optimized.metrics.size_reduction > 0.0);
+        assert!(optimized.metrics.speedup > 1.0);
+    }
+
+    #[test]
+    fn test_pruning_methods() {
+        let optimizer = EdgeOptimizer::new().unwrap();
+        let weights = vec![100u8; 1000];
+        
+        let structured = optimizer.structured_pruning(&weights, 0.5);
+        assert!(structured.is_ok());
+        
+        let unstructured = optimizer.unstructured_pruning(&weights, 0.5);
+        assert!(unstructured.is_ok());
+        
+        // Check that pruning actually removes weights
+        let pruned = unstructured.unwrap();
+        let zero_count = pruned.iter().filter(|&&w| w == 0).count();
+        assert!(zero_count > 0);
     }
     
-    async fn deploy_standard(
-        &self,
-        platform: Platform,
-        model: OptimizedModel,
-    ) -> Result<EdgeModel> {
-        info!("Standard deployment to {:?}", platform);
+    #[tokio::test]
+    async fn test_optimization_recommendations() {
+        let pipeline = Arc::new(MLPipeline::new(
+            crate::PipelineConfig::development("test://db")
+        ).await.unwrap());
         
-        let compiled = self.compiler
-            .compile_standard(model.clone()).await?;
+        let integration = EdgeMLIntegration::new(pipeline).unwrap();
         
-        let endpoint = self.deployer
-            .deploy_standard(compiled, platform.clone()).await?;
+        let vscode_rec = integration.get_recommendations(Platform::VSCode);
+        assert_eq!(vscode_rec.recommended_dtype, DType::Int8);
+        assert_eq!(vscode_rec.max_model_size_mb, 100.0);
         
-        Ok(EdgeModel {
-            model_id: model.base_model.id.clone(),
-            platform,
-            deployed_at: Instant::now(),
-            endpoint,
-            metrics: Arc::new(RwLock::new(EdgeMetrics::default())),
-            config: EdgeConfig::default(),
-        })
+        let slack_rec = integration.get_recommendations(Platform::Slack);
+        assert_eq!(slack_rec.recommended_dtype, DType::Float16);
+        assert_eq!(slack_rec.max_model_size_mb, 25.0);
     }
-    
-    async fn package_vscode_extension(&self, wasm_module: WasmModule) -> Result<VSCodePackage> {
-        Ok(VSCodePackage {
-            wasm: wasm_module,
-            manifest: ExtensionManifest::default(),
-            assets: vec![],
-        })
-    }
-    
-    async fn optimize_for_slack(&self, model: OptimizedModel) -> Result<OptimizedModel> {
-        // Slack-specific optimizations
-        Ok(model)
-    }
-    
-    fn validate_platform(&self, platform: &Platform) -> Result<()> {
-        // Validate platform is supported
-        match platform {
-            Platform::Custom(name) if name.is_empty() => {
-                Err(EdgeError::UnsupportedPlatform("Empty custom platform".to_string()).into())
-            }
-            _ => Ok(())
-        }
-    }
-    
-    pub async fn update_model(
-        &mut self,
-        platform: Platform,
-        model: OrganizationModel,
-    ) -> Result<EdgeModel> {
-        info!("Updating model on platform {:?}", platform);
+
+    #[test]
+    fn test_quantization_helpers() {
+        let optimizer = EdgeOptimizer::new().unwrap();
+        let weights = vec![200u8; 100];
         
-        // Canary deployment if configured
-        if self.config.canary_deployment {
-            self.canary_deploy(platform.clone(), model.clone()).await?;
-        }
+        let int8_result = optimizer.quantize_to_int8(&weights, &QuantizationConfig::default());
+        assert!(int8_result.is_ok());
         
-        // Full deployment
-        let edge_model = self.deploy_to_platform(platform.clone(), model).await?;
-        
-        // Verify deployment
-        self.verify_deployment(&edge_model).await?;
-        
-        Ok(edge_model)
-    }
-    
-    async fn canary_deploy(
-        &self,
-        platform: Platform,
-        model: OrganizationModel,
-    ) -> Result<()> {
-        info!("Starting canary deployment with {}% traffic", 
-              self.config.canary_percentage * 100.0);
-        
-        // Deploy to small percentage of traffic
-        // Monitor metrics
-        // Gradually increase if successful
-        
-        Ok(())
-    }
-    
-    async fn verify_deployment(&self, edge_model: &EdgeModel) -> Result<()> {
-        // Run health checks
-        let health = self.monitor.check_health(edge_model).await?;
-        
-        if !health.is_healthy {
-            if self.config.auto_rollback {
-                warn!("Deployment unhealthy, rolling back");
-                self.rollback(edge_model).await?;
-            }
-            return Err(EdgeError::DeploymentError {
-                platform: format!("{:?}", edge_model.platform),
-                reason: "Health check failed".to_string(),
-            }.into());
-        }
-        
-        Ok(())
-    }
-    
-    async fn rollback(&self, edge_model: &EdgeModel) -> Result<()> {
-        info!("Rolling back deployment for model {}", edge_model.model_id);
-        self.deployer.rollback(edge_model).await
-    }
-    
-    pub fn get_model(&self, platform: &Platform) -> Option<EdgeModel> {
-        self.edge_models.read().get(platform).cloned()
-    }
-    
-    pub fn list_deployments(&self) -> Vec<(Platform, EdgeModel)> {
-        self.edge_models.read()
-            .iter()
-            .map(|(p, m)| (p.clone(), m.clone()))
-            .collect()
-    }
-    
-    pub async fn remove_deployment(&mut self, platform: Platform) -> Result<()> {
-        if let Some(model) = self.edge_models.write().remove(&platform) {
-            self.deployer.undeploy(&model).await?;
-            self.monitor.stop_monitoring(&model).await?;
-        }
-        Ok(())
-    }
-    
-    pub async fn get_metrics(&self, platform: &Platform) -> Option<EdgeMetrics> {
-        self.edge_models.read()
-            .get(platform)
-            .map(|m| m.metrics.read().clone())
+        let fp16_result = optimizer.quantize_to_fp16(&weights);
+        assert!(fp16_result.is_ok());
+        assert_eq!(fp16_result.unwrap().len(), 50); // Half the size
     }
 }

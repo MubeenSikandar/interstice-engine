@@ -582,8 +582,7 @@ async fn extract_and_predict_artifacts(
     
     let predictions = state.ml_pipeline.predict_outcomes(
         Uuid::parse_str(team_id).unwrap_or_else(|_| Uuid::new_v4()),
-        &ml_artifacts,
-        &artifacts.iter().map(|a| a.content.as_str()).collect::<Vec<_>>().join(" ")
+        ml_artifacts,
     ).await?;
     
     for pred in &predictions {

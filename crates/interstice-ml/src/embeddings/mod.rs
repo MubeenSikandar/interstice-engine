@@ -118,6 +118,27 @@ impl Embedder {
                 .context("Failed to download model")?;
         }
 
+        // Try to load the primary model, fallback to FALLBACK_MODEL_ID if it fails
+        let load_result = self.load_model_from_path(&model_path).await;
+        if load_result.is_err() {
+            warn!("Failed to load primary model, trying fallback: {}", FALLBACK_MODEL_ID);
+            let fallback_path = self.config.cache_dir.join(FALLBACK_MODEL_ID);
+            if !fallback_path.exists() {
+                self.download_fallback_model().await
+                    .context("Failed to download fallback model")?;
+            }
+            self.load_model_from_path(&fallback_path).await?;
+        } else {
+            load_result?;
+        }
+
+        *self.model_loaded.write().await = true;
+        info!("Model loaded successfully");
+        Ok(())
+    }
+
+    /// Load model from a specific path
+    async fn load_model_from_path(&self, model_path: &PathBuf) -> Result<()> {
         // Load tokenizer
         let tokenizer_path = model_path.join("tokenizer.json");
         let mut tokenizer = Tokenizer::from_file(&tokenizer_path)
@@ -132,7 +153,7 @@ impl Embedder {
         tokenizer.with_truncation(Some(TruncationParams {
             max_length: self.config.max_seq_length,
             ..Default::default()
-        }));
+        })).map_err(|e| anyhow::anyhow!("Failed to configure tokenizer truncation: {:?}", e))?;
 
         // Load model weights
         let weights_path = model_path.join("model.safetensors");
@@ -156,9 +177,44 @@ impl Embedder {
 
         *self.model.write().await = Some(model);
         *self.tokenizer.write().await = Some(tokenizer);
-        *self.model_loaded.write().await = true;
 
-        info!("Model loaded successfully");
+        Ok(())
+    }
+
+    /// Download fallback model from HuggingFace
+    async fn download_fallback_model(&self) -> Result<()> {
+        let api = Api::new()
+            .context("Failed to create HuggingFace API")?;
+        
+        let repo = api.repo(Repo::with_revision(
+            FALLBACK_MODEL_ID.to_string(),
+            RepoType::Model,
+            "main".to_string(),
+        ));
+
+        let model_path = self.config.cache_dir.join(FALLBACK_MODEL_ID);
+        std::fs::create_dir_all(&model_path)
+            .context("Failed to create cache directory")?;
+
+        // Download required files
+        let files = vec![
+            "config.json",
+            "tokenizer.json",
+            "tokenizer_config.json",
+            "model.safetensors",
+        ];
+
+        for file in files {
+            info!("Downloading fallback {}", file);
+            let content = repo.get(file).await
+                .context(format!("Failed to download fallback {}", file))?;
+            
+            // Copy file from downloaded location to our cache
+            let file_path = model_path.join(file);
+            std::fs::copy(content, file_path)
+                .context(format!("Failed to save fallback {}", file))?;
+        }
+
         Ok(())
     }
 
@@ -256,6 +312,12 @@ impl Embedder {
         // Convert to Vec<f32>
         let embedding = pooled.squeeze(0)?.to_vec1::<f32>()?;
         
+        // Validate embedding dimension
+        if embedding.len() != EMBEDDING_DIM {
+            warn!("Unexpected embedding dimension: {} (expected {})", 
+                  embedding.len(), EMBEDDING_DIM);
+        }
+        
         // Normalize if configured
         let embedding = if self.config.normalize_embeddings {
             Self::normalize(&embedding)
@@ -329,6 +391,12 @@ impl Embedder {
             
             let pooled = self.apply_pooling(&output.unsqueeze(0)?, &mask.unsqueeze(0)?)?;
             let embedding = pooled.squeeze(0)?.to_vec1::<f32>()?;
+            
+            // Validate embedding dimension
+            if embedding.len() != EMBEDDING_DIM {
+                warn!("Unexpected embedding dimension: {} (expected {})", 
+                      embedding.len(), EMBEDDING_DIM);
+            }
             
             let embedding = if self.config.normalize_embeddings {
                 Self::normalize(&embedding)

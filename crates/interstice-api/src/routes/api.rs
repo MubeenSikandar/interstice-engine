@@ -638,7 +638,7 @@ async fn predict_outcomes(
     let predictions = state.ml_pipeline
         .predict_outcomes(
             id,
-            &artifacts.iter().map(|a| {
+            artifacts.iter().map(|a| {
                 interstice_ml::types::Artifact::new(
                     a.id.to_string(),
                     a.content.clone(),
@@ -647,7 +647,6 @@ async fn predict_outcomes(
                     interstice_ml::types::ArtifactType::Message,
                 )
             }).collect::<Vec<_>>(),
-            &artifacts.iter().map(|a| a.content.as_str()).collect::<Vec<_>>().join(" "),
         )
         .await
         .map_err(|e| {

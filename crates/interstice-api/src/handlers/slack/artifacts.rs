@@ -6,7 +6,6 @@ use interstice_core::{artifact::{AccessLevel, ArtifactState, DesignType, Documen
 use interstice_ml::{types::{ArtifactType as MlArtifactType, Platform as MlPlatform}, OutcomePrediction, MLPipeline};
 use serde_json::Value as JsonValue;
 use sqlx::PgPool;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
@@ -93,7 +92,7 @@ pub async fn extract_artifacts_from_event(
                                 content: format!("Reaction added: {}", reaction),
                                 mentions: vec![],
                                 attachments: vec![],
-                                reactions: HashMap::new(),
+                                reactions: Vec::new(),
                                 sentiment: interstice_core::artifact::Sentiment::Neutral,
                                 intent: interstice_core::artifact::MessageIntent::Discussion,
                                 is_edited: false,
@@ -187,7 +186,7 @@ fn determine_artifact_type(text: &str) -> ArtifactType {
             content: text.to_string(),
             mentions: vec![],
             attachments: vec![],
-            reactions: HashMap::new(),
+            reactions: Vec::new(),
             sentiment: interstice_core::artifact::Sentiment::Neutral,
             intent: interstice_core::artifact::MessageIntent::Discussion,
             is_edited: false,
@@ -300,9 +299,7 @@ pub async fn run_ml_on_artifacts(
         )
     }).collect();
     
-    let context = artifacts.iter().map(|a| a.content.as_str()).collect::<Vec<_>>().join(" ");
-    
-    ml_pipeline.predict_outcomes(workspace_id, &ml_artifacts, &context).await.map_err(Into::into)
+    ml_pipeline.predict_outcomes(workspace_id, ml_artifacts).await.map_err(Into::into)
 }
 
 

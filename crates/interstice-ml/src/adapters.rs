@@ -26,7 +26,7 @@ use interstice_core::{
     ArtifactType as CoreArtifactType,
     Platform as CorePlatform,
 };
-use interstice_core::traits::{MLPredictor, OutcomePrediction as CorePrediction};
+use interstice_core::traits::{MLPredictor, OutcomePrediction as CorePrediction, AlternativeOutcome as CoreAlternativeOutcome, ContributingFactor as CoreContributingFactor};
 
 use crate::inference::{
     DevicePreference, ModelConfig, OutcomePredictor, TextEmbedder
@@ -157,6 +157,9 @@ impl Default for AdapterConfig {
                 embedding_dim: 768,
                 confidence_threshold: 0.3,
                 cache_embeddings: true,
+                cache_predictions: true,
+                prediction_cache_size: 1000,
+                prediction_cache_ttl_seconds: 3600,
             },
             performance: PerformanceConfig {
                 max_concurrent_predictions: 100,
@@ -250,6 +253,37 @@ impl RateLimiter {
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
         }
     }
+    
+    /// Get current utilization percentage for monitoring
+    pub async fn get_utilization_percentage(&self) -> f64 {
+        let permits = self.permits.lock().await;
+        let available = *permits;
+        let used = self.max_permits - available;
+        (used as f64 / self.max_permits as f64) * 100.0
+    }
+    
+    /// Get current available permits for monitoring
+    pub async fn get_available_permits(&self) -> usize {
+        let permits = self.permits.lock().await;
+        *permits
+    }
+    
+    /// Check if rate limiter is at capacity
+    pub async fn is_at_capacity(&self) -> bool {
+        let permits = self.permits.lock().await;
+        *permits == 0
+    }
+    
+    /// Get maximum permits for configuration validation
+    pub fn get_max_permits(&self) -> usize {
+        self.max_permits
+    }
+    
+    /// Reset permits to maximum (useful for testing or manual reset)
+    pub async fn reset(&self) {
+        let mut permits = self.permits.lock().await;
+        *permits = self.max_permits;
+    }
 }
 
 pub struct RateLimitGuard {
@@ -287,6 +321,9 @@ impl MLPredictorAdapter {
             embedding_dim: config.models.embedding_dim,
             confidence_threshold: config.models.confidence_threshold,
             cache_embeddings: config.models.cache_embeddings,
+            cache_predictions: config.models.cache_predictions,
+            prediction_cache_size: config.models.prediction_cache_size,
+            prediction_cache_ttl_seconds: config.models.prediction_cache_ttl_seconds,
         };
 
         let embedder = Arc::new(
@@ -499,6 +536,7 @@ impl MLPredictorAdapter {
             related_artifacts_count: 0,
             workspace_activity_level: config.defaults.workspace_activity_level,
             platform_signals: None,
+            historical_accuracy: None,
         };
         
         // Adjust for time zones and work patterns
@@ -676,7 +714,7 @@ impl MLPredictorAdapter {
                 content: "Unknown message".to_string(),
                 mentions: vec![],
                 attachments: vec![],
-                reactions: std::collections::HashMap::new(),
+                reactions: Vec::new(),
                 sentiment: interstice_core::artifact::Sentiment::Neutral,
                 intent: interstice_core::artifact::MessageIntent::Other,
                 is_edited: false,
@@ -691,7 +729,7 @@ impl MLPredictorAdapter {
                 content: "comment".to_string(),
                 mentions: vec![],
                 attachments: vec![],
-                reactions: std::collections::HashMap::new(),
+                reactions: Vec::new(),
                 sentiment: interstice_core::artifact::Sentiment::Neutral,
                 intent: interstice_core::artifact::MessageIntent::Other,
                 is_edited: false,
@@ -722,7 +760,7 @@ impl MLPredictorAdapter {
                 content: "meeting".to_string(),
                 mentions: vec![],
                 attachments: vec![],
-                reactions: std::collections::HashMap::new(),
+                reactions: Vec::new(),
                 sentiment: interstice_core::artifact::Sentiment::Neutral,
                 intent: interstice_core::artifact::MessageIntent::Other,
                 is_edited: false,
@@ -792,7 +830,7 @@ impl MLPredictorAdapter {
                 content: "alert".to_string(),
                 mentions: vec![],
                 attachments: vec![],
-                reactions: std::collections::HashMap::new(),
+                reactions: Vec::new(),
                 sentiment: interstice_core::artifact::Sentiment::Neutral,
                 intent: interstice_core::artifact::MessageIntent::Other,
                 is_edited: false,
@@ -865,6 +903,27 @@ impl MLPredictor for MLPredictorAdapter {
         &self,
         artifacts: &[CoreArtifact],
     ) -> Result<Vec<CorePrediction>> {
+        // Log rate limiter status for monitoring
+        let utilization = self.rate_limiter.get_utilization_percentage().await;
+        let available = self.rate_limiter.get_available_permits().await;
+        let is_at_capacity = self.rate_limiter.is_at_capacity().await;
+        
+        tracing::debug!(
+            "Rate limiter status: utilization={:.1}%, available={}, at_capacity={}",
+            utilization,
+            available,
+            is_at_capacity
+        );
+        
+        // Warn if approaching capacity
+        if utilization > 80.0 {
+            tracing::warn!(
+                "Rate limiter utilization high: {:.1}% (max_permits={})",
+                utilization,
+                self.rate_limiter.get_max_permits()
+            );
+        }
+        
         let _guard = self.rate_limiter.acquire().await;
         
         let start = Instant::now();
@@ -914,6 +973,25 @@ impl MLPredictor for MLPredictorAdapter {
                             suggested_targets: vec![],
                             estimated_impact: 0.5,
                             recommended_priority: Priority::Medium,
+                            contributing_factors: p.contributing_factors.into_iter()
+                                .map(|factor| CoreContributingFactor {
+                                    factor_id: factor.factor_type.clone(),
+                                    name: factor.factor_type,
+                                    weight: factor.weight,
+                                    description: Some(factor.description),
+                                    category: interstice_core::traits::FactorCategory::Historical,
+                                })
+                                .collect(),
+                            alternative_outcomes: p.alternative_outcomes.into_iter()
+                                .map(|alt| CoreAlternativeOutcome {
+                                    outcome_id: alt.outcome_id,
+                                    outcome_name: alt.outcome_name,
+                                    relative_likelihood: alt.relative_likelihood,
+                                    key_differences: alt.key_differences,
+                                    probability: alt.probability,
+                                })
+                                .collect(),
+                            
                         }),
                     Err(e) => {
                         warn!("Invalid outcome ID {}: {}", p.outcome_id, e);

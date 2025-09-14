@@ -362,6 +362,7 @@ pub struct PredictionContext {
     pub related_artifacts_count: u32,
     pub workspace_activity_level: f32,
     pub platform_signals: Option<serde_json::Value>,
+    pub historical_accuracy: Option<f32>,
 }
 
 impl PredictionContext {
@@ -379,6 +380,7 @@ impl PredictionContext {
             related_artifacts_count: 0,
             workspace_activity_level: 0.5,
             platform_signals: None,
+            historical_accuracy: None,
         }
     }
 
@@ -407,6 +409,39 @@ impl PredictionContext {
             (self.related_artifacts_count as f32).ln() / 10.0,
             self.workspace_activity_level,
         ]
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PredictionReasoning {
+    pub summary: String,
+    pub confidence_factors: Vec<String>,
+    pub uncertainty_factors: Vec<String>,
+    pub key_assumptions: Vec<String>,
+    pub data_quality_score: f32,
+    pub model_version: String,
+}
+
+impl PredictionReasoning {
+    pub fn new(summary: impl Into<String>) -> Self {
+        Self {
+            summary: summary.into(),
+            confidence_factors: Vec::new(),
+            uncertainty_factors: Vec::new(),
+            key_assumptions: Vec::new(),
+            data_quality_score: 1.0,
+            model_version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    }
+    
+    pub fn with_confidence_factor(mut self, factor: impl Into<String>) -> Self {
+        self.confidence_factors.push(factor.into());
+        self
+    }
+    
+    pub fn with_uncertainty_factor(mut self, factor: impl Into<String>) -> Self {
+        self.uncertainty_factors.push(factor.into());
+        self
     }
 }
 
@@ -725,13 +760,14 @@ pub struct ContributingFactor {
     pub description: String,
 }
 
-/// Alternative outcome suggestion
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlternativeOutcome {
-    pub outcome_id: String,
+    pub outcome_id: Uuid,
     pub outcome_name: String,
-    pub confidence: f32,
-    pub reasoning: String,
+    pub probability: f32,
+    pub relative_likelihood: f32,
+    pub key_differences: Vec<String>,
 }
 
 /// Impact level enumeration
@@ -742,6 +778,18 @@ pub enum ImpactLevel {
     Medium,
     Low,
     Negligible,
+}
+
+impl ImpactLevel {
+    pub fn from_score(score: f32) -> Self {
+        match score {
+            s if s >= 0.9 => ImpactLevel::Critical,
+            s if s >= 0.7 => ImpactLevel::High,
+            s if s >= 0.5 => ImpactLevel::Medium,
+            s if s >= 0.3 => ImpactLevel::Low,
+            _ => ImpactLevel::Negligible,
+        }
+    }
 }
 
 /// Duration for completion estimates
@@ -793,6 +841,7 @@ pub struct ModelMetrics {
     pub auc_roc: Option<f64>,
     pub mean_confidence: f64,
     pub prediction_latency_ms: f64,
+    pub cache_hit_rate: f32,
     pub last_updated: DateTime<Utc>,
     pub per_outcome_metrics: Option<serde_json::Value>,
 }
@@ -809,6 +858,7 @@ impl ModelMetrics {
             auc_roc: None,
             mean_confidence: 0.0,
             prediction_latency_ms: 0.0,
+            cache_hit_rate: 0.0,
             last_updated: Utc::now(),
             per_outcome_metrics: None,
         }
@@ -833,6 +883,7 @@ impl ModelMetrics {
             prediction_latency_ms: 0.0,
             last_updated: Utc::now(),
             per_outcome_metrics: Some(serde_json::to_value(per_outcome).unwrap()),
+            cache_hit_rate: 0.0,
         }
     }
     /// Update metrics with new prediction result

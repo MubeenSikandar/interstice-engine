@@ -59,3 +59,15 @@ safetensors = "0.6.2"
 dashmap = "5.5.3"
 num_cpus = "1.17.0"
 
+[features]
+default = ["edge", "cuda", "monitoring"]
+edge = []
+cuda = []
+metal = []
+monitoring = []
+experimental = []
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.21.0"
+

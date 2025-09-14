@@ -1,7 +1,9 @@
+//interstice-ml/src/inference/cache.rs
 //! High-Performance LRU Cache Implementation
 //! 
 //! This module provides production-ready LRU (Least Recently Used) cache implementations
 //! with advanced features including TTL support, statistics, async interfaces, and more.
+
 
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -66,8 +68,93 @@ impl<V> CacheEntry<V> {
 /// Node in the doubly-linked list for LRU tracking
 struct Node<K> {
     key: K,
-    prev: Option<Box<Node<K>>>,
-    next: Option<Box<Node<K>>>,
+    prev: Option<usize>,
+    next: Option<usize>,
+}
+
+impl<K> Node<K> {
+    fn new(key: K) -> Self {
+        Self {
+            key,
+            prev: None,
+            next: None,
+        }
+    }
+}
+
+/// Doubly-linked list for efficient LRU tracking using indices
+struct LinkedList<K> {
+    nodes: Vec<Node<K>>,
+    head: Option<usize>,
+    tail: Option<usize>,
+}
+
+impl<K> LinkedList<K> {
+    fn new() -> Self {
+        Self {
+            nodes: Vec::new(),
+            head: None,
+            tail: None,
+        }
+    }
+    
+    /// Push a node to the front (most recently used)
+    fn push_front(&mut self, key: K) -> usize {
+        let node = Node::new(key);
+        let index = self.nodes.len();
+        self.nodes.push(node);
+        
+        if let Some(head_idx) = self.head {
+            self.nodes[head_idx].prev = Some(index);
+        }
+        
+        self.nodes[index].next = self.head;
+        self.head = Some(index);
+        
+        if self.tail.is_none() {
+            self.tail = Some(index);
+        }
+        
+        index
+    }
+    
+    /// Remove a node from the list
+    fn unlink(&mut self, node_idx: usize) {
+        if let Some(node) = self.nodes.get(node_idx) {
+            let prev = node.prev;
+            let next = node.next;
+            
+            if let Some(prev_idx) = prev {
+                if let Some(prev_node) = self.nodes.get_mut(prev_idx) {
+                    prev_node.next = next;
+                }
+            } else {
+                self.head = next;
+            }
+            
+            if let Some(next_idx) = next {
+                if let Some(next_node) = self.nodes.get_mut(next_idx) {
+                    next_node.prev = prev;
+                }
+            } else {
+                self.tail = prev;
+            }
+        }
+    }
+    
+    /// Pop the back node (least recently used)
+    fn pop_back(&mut self) -> Option<K> {
+        self.tail.map(|tail_idx| {
+            self.unlink(tail_idx);
+            self.nodes.remove(tail_idx).key
+        })
+    }
+}
+
+impl<K> Drop for LinkedList<K> {
+    fn drop(&mut self) {
+        // Vec will automatically clean up the nodes
+    }
 }
 
 /// Configuration for LRU cache
@@ -161,7 +248,7 @@ impl fmt::Display for CacheStatistics {
     }
 }
 
-/// Optimized LRU Cache using a HashMap and custom doubly-linked list
+/// Optimized LRU Cache using a HashMap and doubly-linked list
 pub struct LRUCache<K, V, S = std::collections::hash_map::RandomState>
 where
     K: Hash + Eq + Clone,
@@ -169,8 +256,8 @@ where
     S: BuildHasher,
 {
     capacity: usize,
-    map: HashMap<K, CacheEntry<V>, S>,
-    lru_order: Vec<K>, // More efficient than VecDeque for our use case
+    map: HashMap<K, (CacheEntry<V>, usize), S>,
+    list: LinkedList<K>,
     config: CacheConfig,
     stats: Option<Arc<CacheStatistics>>,
 }
@@ -210,7 +297,7 @@ where
         Ok(Self {
             capacity: config.capacity,
             map: HashMap::with_capacity(initial_capacity),
-            lru_order: Vec::with_capacity(config.capacity),
+            list: LinkedList::new(),
             config,
             stats,
         })
@@ -229,8 +316,8 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        // First check if the key exists and if the entry is not expired
-        let needs_removal = self.map.get(key).map_or(false, |entry| entry.is_expired());
+        // Check if the key exists and if the entry is not expired
+        let needs_removal = self.map.get(key).map_or(false, |(entry, _)| entry.is_expired());
         
         if needs_removal {
             self.remove_internal(key);
@@ -241,15 +328,25 @@ where
             return None;
         }
         
-        if let Some(entry) = self.map.get_mut(key) {
+        // First, get the key and value without holding a mutable reference
+        let (actual_key, old_node_idx) = if let Some((k, (_, node_idx))) = self.map.get_key_value(key) {
+            (k.clone(), *node_idx)
+        } else {
+            if let Some(ref stats) = self.stats {
+                stats.misses.fetch_add(1, Ordering::Relaxed);
+            }
+            return None;
+        };
+        
+        // Now we can safely get a mutable reference and update
+        if let Some((entry, node_idx)) = self.map.get_mut(key) {
             entry.touch();
             let value = entry.value.clone();
             
-            // Update LRU order efficiently
-            if let Some(pos) = self.lru_order.iter().position(|k| k.borrow() == key) {
-                let key = self.lru_order.remove(pos);
-                self.lru_order.push(key);
-            }
+            // Move node to front (most recently used)
+            self.list.unlink(old_node_idx);
+            let new_idx = self.list.push_front(actual_key);
+            *node_idx = new_idx;
             
             if let Some(ref stats) = self.stats {
                 stats.hits.fetch_add(1, Ordering::Relaxed);
@@ -270,7 +367,7 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.map.get(key).and_then(|entry| {
+        self.map.get(key).and_then(|(entry, _)| {
             if entry.is_expired() {
                 None
             } else {
@@ -286,26 +383,36 @@ where
     
     /// Inserts a key-value pair with a specific TTL
     pub fn put_with_ttl(&mut self, key: K, value: V, ttl: Option<Duration>) -> Option<V> {
+        // Check if key already exists
+        if let Some((old_entry, old_node_idx)) = self.map.remove(&key) {
+            self.list.unlink(old_node_idx);
+            
+            // Insert new entry
+            let node_idx = self.list.push_front(key.clone());
+            self.map.insert(key, (CacheEntry::new(value, ttl), node_idx));
+            
+            if let Some(ref stats) = self.stats {
+                stats.insertions.fetch_add(1, Ordering::Relaxed);
+            }
+            
+            return Some(old_entry.value);
+        }
+        
         // Check if we need to evict
-        if !self.map.contains_key(&key) && self.map.len() >= self.capacity {
+        if self.map.len() >= self.capacity {
             self.evict_lru();
         }
         
-        // Remove from LRU order if it exists
-        if let Some(pos) = self.lru_order.iter().position(|k| k == &key) {
-            self.lru_order.remove(pos);
-        }
-        
-        // Insert or update
-        let old_entry = self.map.insert(key.clone(), CacheEntry::new(value, ttl));
-        self.lru_order.push(key);
+        // Insert new entry
+        let node_idx = self.list.push_front(key.clone());
+        self.map.insert(key, (CacheEntry::new(value, ttl), node_idx));
         
         if let Some(ref stats) = self.stats {
             stats.insertions.fetch_add(1, Ordering::Relaxed);
             stats.current_size.store(self.map.len(), Ordering::Relaxed);
         }
         
-        old_entry.map(|e| e.value)
+        None
     }
     
     /// Removes a key from the cache
@@ -322,25 +429,30 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        if let Some(pos) = self.lru_order.iter().position(|k| k.borrow() == key) {
-            self.lru_order.remove(pos);
-        }
-        
-        let removed = self.map.remove(key);
-        
-        if removed.is_some() {
+        if let Some((entry, node_idx)) = self.map.remove(key) {
+            self.list.unlink(node_idx);
+            
             if let Some(ref stats) = self.stats {
                 stats.current_size.store(self.map.len(), Ordering::Relaxed);
             }
+            
+            Some(entry.value)
+        } else {
+            None
         }
-        
-        removed.map(|e| e.value)
     }
     
     /// Evicts the least recently used entry
     fn evict_lru(&mut self) {
-        if let Some(key) = self.lru_order.first().cloned() {
-            self.lru_order.remove(0);
+        if let Some(key) = self.list.pop_back() {
+            // Adjust indices in map after removal
+            let removed_idx = self.list.nodes.len(); // Index of removed node
+            for (_, node_idx) in self.map.values_mut() {
+                if *node_idx > removed_idx {
+                    *node_idx -= 1;
+                }
+            }
+            
             self.map.remove(&key);
             
             if let Some(ref stats) = self.stats {
@@ -354,7 +466,7 @@ where
     pub fn cleanup_expired(&mut self) -> usize {
         let expired_keys: Vec<K> = self.map
             .iter()
-            .filter(|(_, entry)| entry.is_expired())
+            .filter(|(_, (entry, _))| entry.is_expired())
             .map(|(k, _)| k.clone())
             .collect();
         
@@ -373,7 +485,7 @@ where
     /// Clears all entries from the cache
     pub fn clear(&mut self) {
         self.map.clear();
-        self.lru_order.clear();
+        self.list = LinkedList::new();
         
         if let Some(ref stats) = self.stats {
             stats.current_size.store(0, Ordering::Relaxed);
@@ -396,12 +508,17 @@ where
         K: Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        self.map.get(key).map_or(false, |entry| !entry.is_expired())
+        self.map.get(key).map_or(false, |(entry, _)| !entry.is_expired())
     }
     
     /// Returns the cache capacity
     pub fn capacity(&self) -> usize {
         self.capacity
+    }
+    
+    /// Returns the cache configuration
+    pub fn config(&self) -> &CacheConfig {
+        &self.config
     }
     
     /// Resizes the cache to a new capacity
@@ -411,6 +528,7 @@ where
         }
         
         self.capacity = new_capacity;
+        self.config.capacity = new_capacity;
         
         // Evict entries if necessary
         while self.map.len() > self.capacity {
@@ -428,8 +546,8 @@ where
     /// Returns an iterator over the cache entries
     pub fn iter(&self) -> impl Iterator<Item = (&K, &V)> + '_ {
         self.map.iter()
-            .filter(|(_, entry)| !entry.is_expired())
-            .map(|(k, entry)| (k, &entry.value))
+            .filter(|(_, (entry, _))| !entry.is_expired())
+            .map(|(k, (entry, _))| (k, &entry.value))
     }
 }
 
@@ -665,6 +783,14 @@ impl CacheBuilder {
     {
         ConcurrentLRUCache::with_config(self.config)
     }
+    
+    pub fn build_non_concurrent<K, V>(self) -> Result<LRUCache<K, V>, CacheError>
+    where
+        K: Hash + Eq + Clone,
+        V: Clone,
+    {
+        LRUCache::with_config(self.config)
+    }
 }
 
 impl Default for CacheBuilder {
@@ -848,5 +974,127 @@ mod tests {
         assert_eq!(values[1], Some(2));
         assert_eq!(values[2], Some(3));
         assert_eq!(values[3], None);
+    }
+    
+    #[test]
+    fn test_node_linked_list_operations() {
+        let mut list = LinkedList::<String>::new();
+        
+        // Test empty list
+        assert!(list.pop_back().is_none());
+        
+        // Add nodes
+        let idx1 = list.push_front("first".to_string());
+        assert!(list.head.is_some());
+        assert!(list.tail.is_some());
+        assert_eq!(idx1, 0);
+        
+        // Pop back
+        let popped = list.pop_back();
+        assert_eq!(popped, Some("first".to_string()));
+        assert!(list.head.is_none());
+        assert!(list.tail.is_none());
+    }
+    
+    #[test]
+    fn test_auto_cleanup() {
+        let config = CacheConfig {
+            capacity: 10,
+            default_ttl: Some(Duration::from_millis(100)),
+            auto_cleanup: true,
+            cleanup_interval: Duration::from_millis(150),
+            enable_statistics: true,
+            initial_capacity: Some(10),
+        };
+        
+        let cache = ConcurrentLRUCache::with_config(config).unwrap();
+        
+        // Add items that will expire
+        for i in 0..5 {
+            cache.put(i, i * 2);
+        }
+        
+        assert_eq!(cache.len(), 5);
+        
+        // Wait for auto cleanup
+        thread::sleep(Duration::from_millis(300));
+        
+        // Items should be expired and cleaned up
+        assert_eq!(cache.len(), 0);
+    }
+    
+    #[test]
+    fn test_config_access() {
+        let config = CacheConfig {
+            capacity: 50,
+            default_ttl: Some(Duration::from_secs(30)),
+            auto_cleanup: false,
+            cleanup_interval: Duration::from_secs(60),
+            enable_statistics: true,
+            initial_capacity: Some(25),
+        };
+        
+        let cache = LRUCache::<String, i32>::with_config(config.clone()).unwrap();
+        
+        assert_eq!(cache.config().capacity, 50);
+        assert_eq!(cache.config().default_ttl, Some(Duration::from_secs(30)));
+        assert_eq!(cache.config().auto_cleanup, false);
+        assert_eq!(cache.config().enable_statistics, true);
+        assert_eq!(cache.config().initial_capacity, Some(25));
+    }
+    
+    #[test]
+    fn test_builder_non_concurrent() {
+        let cache = CacheBuilder::new()
+            .capacity(50)
+            .default_ttl(Duration::from_secs(10))
+            .initial_capacity(25)
+            .with_statistics()
+            .build_non_concurrent::<String, String>()
+            .unwrap();
+        
+        assert_eq!(cache.capacity(), 50);
+        assert!(cache.statistics().is_some());
+    }
+    
+    #[test]
+    fn test_builder_with_auto_cleanup() {
+        let cache = CacheBuilder::new()
+            .capacity(10)
+            .default_ttl(Duration::from_millis(100))
+            .auto_cleanup(Duration::from_millis(150))
+            .with_statistics()
+            .build::<i32, i32>()
+            .unwrap();
+        
+        // Add some items
+        for i in 0..5 {
+            cache.put(i, i * 2);
+        }
+        
+        assert_eq!(cache.len(), 5);
+        
+        // Wait for auto cleanup
+        thread::sleep(Duration::from_millis(300));
+        
+        // Items should be expired and cleaned up
+        assert_eq!(cache.len(), 0);
+    }
+    
+    #[test]
+    fn test_builder_all_methods() {
+        let cache = CacheBuilder::new()
+            .capacity(100)
+            .default_ttl(Duration::from_secs(30))
+            .auto_cleanup(Duration::from_secs(60))
+            .with_statistics()
+            .initial_capacity(50)
+            .build::<String, i32>()
+            .unwrap();
+        
+        // Test that all configuration is applied
+        cache.put("test".to_string(), 42);
+        assert_eq!(cache.get(&"test".to_string()), Some(42));
+        assert!(cache.statistics().is_some());
     }
 }

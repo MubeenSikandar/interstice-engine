@@ -146,7 +146,15 @@ impl LoRAAdapter {
             
             let scale_factor = self.alpha / self.rank as f32;
             let scaled = lora_output.broadcast_mul(&Tensor::new(&[scale_factor], &lora_output.device()).map_err(anyhow::Error::from)?).map_err(anyhow::Error::from)?;
-            input.add(&scaled).map_err(anyhow::Error::from)
+            
+            // Apply dropout if configured
+            let output = if self.dropout > 0.0 {
+                ops::dropout(&input.add(&scaled)?, self.dropout)?
+            } else {
+                input.add(&scaled)?
+            };
+            
+            Ok(output)
         } else {
             Ok(input.clone())
         }
@@ -238,6 +246,7 @@ impl BaseModel {
     }
 
     fn layer_norm(&self, input: Tensor, layer_idx: usize) -> Result<Tensor> {
+        debug!("Applying layer norm for layer: {}", layer_idx);
         let hidden_size = self.config.hidden_size;
         let weight = Tensor::ones(&[hidden_size], DType::F32, &self.device)?;
         let bias = Tensor::zeros(&[hidden_size], DType::F32, &self.device)?;
@@ -250,10 +259,13 @@ impl BaseModel {
         attention_mask: Option<&Tensor>,
         layer_idx: usize,
     ) -> Result<Tensor> {
+        debug!("Self attention layer: {}, mask present: {}", layer_idx, attention_mask.is_some());
         // Simplified self-attention
         let hidden_size = self.config.hidden_size;
         let num_heads = self.config.num_heads;
         let head_dim = hidden_size / num_heads;
+        
+        debug!("Attention config - hidden_size: {}, num_heads: {}, head_dim: {}", hidden_size, num_heads, head_dim);
         
         // Query, Key, Value projections would go here
         // For now, return input with dropout
@@ -382,6 +394,7 @@ impl CheckpointManager {
         // Save using manual serialization
         let mut buffer = Vec::new();
         for (name, tensor) in tensors {
+            debug!("Serializing checkpoint tensor: {}", name);
             let data = tensor.to_vec1::<f32>()?;
             let bytes: Vec<u8> = data.iter().flat_map(|&f| f.to_le_bytes()).collect();
             buffer.extend_from_slice(&bytes);
@@ -581,16 +594,25 @@ impl OrgModel {
                 duration: epoch_start.elapsed(),
             };
             
-            self.training_history.write().epochs.push(epoch_metrics.clone());
+            let mut history = self.training_history.write();
+            history.epochs.push(epoch_metrics.clone());
+            
+            // Update best metrics tracking
+            if epoch_metrics.val_loss < history.best_validation_loss {
+                history.best_validation_loss = epoch_metrics.val_loss;
+                history.best_epoch = epoch_metrics.epoch;
+            }
             
             info!(
-                "Epoch {}/{}: train_loss={:.4}, train_acc={:.4}, val_loss={:.4}, val_acc={:.4}",
+                "Epoch {}/{}: train_loss={:.4}, train_acc={:.4}, val_loss={:.4}, val_acc={:.4}, lr={:.6}, duration={:?}",
                 epoch + 1,
                 self.training_config.epochs,
                 epoch_metrics.train_loss,
                 epoch_metrics.train_accuracy,
                 epoch_metrics.val_loss,
-                epoch_metrics.val_accuracy
+                epoch_metrics.val_accuracy,
+                epoch_metrics.learning_rate,
+                epoch_metrics.duration
             );
             
             // Early stopping check
@@ -634,12 +656,10 @@ impl OrgModel {
         for example in examples {
             let input_ids = self.tokenizer.encode(&example.input_text);
             let label = example.suggested_outcome_id.map(|id| id.as_u128() as usize).unwrap_or(0);
-            
             processed.push(ProcessedExample {
                 input_ids: Tensor::from_vec(input_ids.iter().map(|&x| x as u32).collect::<Vec<_>>(), &[1, 512], &self.device)?,
                 attention_mask: Tensor::ones(&[1, 512], DType::F32, &self.device)?,
                 label,
-                weight: example.importance(),
             });
         }
         
@@ -685,6 +705,7 @@ impl OrgModel {
         optimizer: &mut impl Optimizer,
         epoch: usize,
     ) -> Result<(f32, f32)> {
+        debug!("Training epoch: {}", epoch);
         let mut total_loss = 0.0;
         let correct = 0;
         let mut total = 0;
@@ -696,8 +717,6 @@ impl OrgModel {
             // Backward pass
             optimizer.backward_step(&batch_loss)?;
             
-            // Gradient clipping
-            self.clip_gradients(optimizer)?;
             
             // Update metrics
             total_loss += batch_loss.to_scalar::<f32>()?;
@@ -729,6 +748,7 @@ impl OrgModel {
     }
 
     async fn forward_batch(&self, batch: &[ProcessedExample], training: bool) -> Result<Tensor> {
+        debug!("Forward pass - training mode: {}", training);
         // Stack batch tensors
         let input_ids = Tensor::stack(
             &batch.iter().map(|e| e.input_ids.clone()).collect::<Vec<_>>(),
@@ -779,10 +799,6 @@ impl OrgModel {
         pooled.matmul(&weight).map_err(anyhow::Error::from)
     }
 
-    fn clip_gradients(&self, optimizer: &impl Optimizer) -> Result<()> {
-        // Gradient clipping implementation
-        Ok(())
-    }
 
     fn get_learning_rate(&self, epoch: usize) -> f32 {
         // Learning rate scheduling
@@ -910,6 +926,7 @@ impl OrgModel {
             prediction_latency_ms: total_latency / total as f64,
             last_updated: Utc::now(),
             per_outcome_metrics: Some(serde_json::to_value(per_class).unwrap_or(serde_json::Value::Null)),
+            cache_hit_rate: 0.0,
         })
    }
 
@@ -987,10 +1004,12 @@ impl OrgModel {
                alternative_outcomes: self.get_alternative_outcomes(&indexed_probs, *class_idx)
                    .into_iter()
                    .map(|outcome| AlternativeOutcome {
-                       outcome_id: Uuid::new_v4().to_string(),
+                       outcome_id: Uuid::new_v4(),
                        outcome_name: outcome,
-                       confidence: 0.1, // Default probability
-                       reasoning: "Alternative outcome based on model analysis".to_string(),
+                       probability: 0.1,
+                       relative_likelihood: 0.1,
+                       key_differences: Vec::new(),
+                       
                    })
                    .collect(),
                predicted_impact: self.estimate_impact(*prob),
@@ -1008,6 +1027,7 @@ impl OrgModel {
    }
 
    fn generate_reasoning(&self, input: &str, outcome: &str, confidence: f32) -> String {
+       debug!("Generating reasoning for input length: {}", input.len());
        let confidence_level = match confidence {
            c if c > 0.8 => "high",
            c if c > 0.5 => "moderate",
@@ -1104,6 +1124,7 @@ impl OrgModel {
                // Serialize to bytes - use candle's built-in serialization
         let mut buffer = Vec::new();
         for (name, tensor) in tensors {
+            debug!("Exporting tensor: {}", name);
             let tensor_data = tensor.to_vec1::<f32>()?;
             buffer.extend_from_slice(&tensor_data);
         }
@@ -1218,7 +1239,6 @@ struct ProcessedExample {
     input_ids: Tensor,
     attention_mask: Tensor,
     label: usize,
-    weight: f32,
 }
 
 /// AdamW optimizer implementation

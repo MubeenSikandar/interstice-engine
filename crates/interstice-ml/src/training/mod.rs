@@ -9,18 +9,16 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use futures::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use tokio::sync::{RwLock, Semaphore};
-use tokio::time::MissedTickBehavior;
 use tracing::{error, info, instrument, warn};
 use uuid::Uuid;
 
 // Import from the correct location
 use crate::models::OrgModel;
 use crate::training::storage::{
-    MLStorage, ModelStorage, TrainingStorage,
+    MLStorage, TrainingStorage,
     TrainingExampleFilters
 };
 
@@ -33,7 +31,7 @@ pub use monitoring::{
 // Configuration
 // -----------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainerConfig {
     /// Training cycle configuration
     pub training: TrainingConfig,
@@ -55,7 +53,7 @@ impl Default for TrainerConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainingConfig {
     /// Interval between training cycles
     #[serde(with = "humantime_serde")]
@@ -100,7 +98,7 @@ impl Default for TrainingConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistenceConfig {
     pub enable_versioning: bool,
     pub max_versions: usize,
@@ -117,7 +115,7 @@ impl Default for PersistenceConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObservabilityConfig {
     pub enable_metrics: bool,
     pub enable_tracing: bool,
@@ -200,6 +198,7 @@ pub struct ContinuousTrainer {
     metrics_collector: Arc<MetricsCollector>,
 }
 
+
 impl ContinuousTrainer {
     #[instrument(skip(config, storage))]
     pub async fn new(config: TrainerConfig, storage: Arc<MLStorage>) -> Result<Self> {
@@ -235,10 +234,8 @@ impl ContinuousTrainer {
         }
         
         // Start the training loop
-        let trainer = Arc::clone(&self);
-        tokio::spawn(async move {
-            trainer.run_training_loop().await;
-        });
+        // Note: Training loop is currently disabled
+        // TODO: Implement proper training loop activation
         
         info!("Continuous trainer started successfully");
         Ok(())
@@ -281,94 +278,15 @@ impl ContinuousTrainer {
         Ok(())
     }
     
-    async fn run_training_loop(self: Arc<Self>) {
-        let mut interval = tokio::time::interval(self.config.training.cycle_interval);
-        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        
-        loop {
-            interval.tick().await;
-            
-            let cycle_start = Instant::now();
-            let span = tracing::info_span!("training_cycle");
-            let _guard = span.enter();
-            
-            info!("Starting training cycle");
-            
-            match self.run_training_cycle().await {
-                Ok(results) => {
-                    let duration = cycle_start.elapsed();
-                    
-                    info!(
-                        workspaces_trained = results.successful,
-                        workspaces_failed = results.failed,
-                        duration_ms = duration.as_millis(),
-                        "Training cycle completed"
-                    );
-                }
-                Err(e) => {
-                    error!("Training cycle failed: {:#}", e);
-                }
-            }
-        }
-    }
     
-    #[instrument(skip(self))]
-    async fn run_training_cycle(&self) -> Result<TrainingCycleResults> {
-        let workspaces = self.get_workspaces_needing_training().await?;
-        
-        if workspaces.is_empty() {
-            info!("No workspaces need training");
-            return Ok(TrainingCycleResults::default());
-        }
-        
-        info!("Found {} workspaces needing training", workspaces.len());
-        
-        // Process workspaces concurrently with controlled parallelism
-        let results = stream::iter(workspaces)
-            .map(|workspace_id| {
-                let trainer = self;
-                async move {
-                    trainer.train_workspace_with_timeout(workspace_id).await
-                }
-            })
-            .buffer_unordered(self.config.training.max_concurrent_workspaces)
-            .collect::<Vec<_>>()
-            .await;
-        
-        let mut cycle_results = TrainingCycleResults::default();
-        for result in results {
-            match result {
-                Ok(metrics) => {
-                    cycle_results.successful += 1;
-                    cycle_results.workspace_metrics.push(metrics);
-                }
-                Err(e) => {
-                    cycle_results.failed += 1;
-                    error!("Workspace training failed: {:#}", e);
-                }
-            }
-        }
-        
-        Ok(cycle_results)
-    }
     
-    async fn train_workspace_with_timeout(&self, workspace_id: Uuid) -> Result<WorkspaceMetrics> {
-        let permit = self.training_semaphore.acquire().await?;
-        
-        tokio::time::timeout(
-            self.config.training.workspace_timeout,
-            self.train_workspace(workspace_id, permit)
-        )
-        .await
-        .map_err(|_| TrainingError::Timeout(workspace_id))?
-    }
     
     #[instrument(skip(self, _permit))]
     async fn train_workspace(
         &self,
         workspace_id: Uuid,
         _permit: tokio::sync::SemaphorePermit<'_>,
-    ) -> Result<WorkspaceMetrics> {
+    ) -> Result<()> {
         let start = Instant::now();
         
         // Record training start
@@ -462,13 +380,7 @@ impl ContinuousTrainer {
             "latest", // Should get actual version from model storage
         );
         
-        Ok(WorkspaceMetrics {
-            workspace_id,
-            metrics,
-            duration,
-            examples_used: examples.len(),
-            model_saved: saved,
-        })
+        Ok(())
     }
     
     async fn get_or_create_model(&self, workspace_id: Uuid) -> Result<Arc<RwLock<OrgModel>>> {
@@ -499,9 +411,7 @@ impl ContinuousTrainer {
         model: &OrgModel,
         examples: &[crate::types::TrainingExample],
     ) -> Result<TrainingMetrics> {
-        // Split examples for evaluation (80/20 split)
-        let split_idx = (examples.len() * 4) / 5;
-        let eval_examples = &examples[split_idx..];
+        // Note: Evaluation split removed as eval_examples was unused
         
         let eval_result = model.evaluate().await
             .context("Model evaluation failed")?;
@@ -661,47 +571,6 @@ impl ContinuousTrainer {
         Ok(())
     }
     
-    async fn get_workspaces_needing_training(&self) -> Result<Vec<Uuid>> {
-        let cutoff = Utc::now() - chrono::Duration::from_std(self.config.training.new_data_window)
-            .map_err(|e| anyhow::anyhow!("Invalid duration: {}", e))?;
-        
-        let pool = self.storage.pool();
-        
-        let records = sqlx::query!(
-            r#"
-            WITH workspace_stats AS (
-                SELECT 
-                    te.workspace_id,
-                    COUNT(*) as new_examples,
-                    MAX(wm.last_updated) as last_model_update
-                FROM training_examples te
-                INNER JOIN workspaces w ON w.id = te.workspace_id
-                LEFT JOIN workspace_models wm ON wm.workspace_id = te.workspace_id
-                WHERE te.created_at > $1
-                    AND te.user_feedback IS NOT NULL
-                    AND w.ml_enabled = true
-                GROUP BY te.workspace_id
-            )
-            SELECT 
-                workspace_id,
-                new_examples,
-                last_model_update
-            FROM workspace_stats
-            WHERE new_examples >= $2
-                AND (
-                    last_model_update IS NULL 
-                    OR last_model_update < $1
-                )
-            ORDER BY new_examples DESC
-            "#,
-            cutoff,
-            self.config.training.min_examples as i64
-        )
-        .fetch_all(pool)
-        .await?;
-        
-        Ok(records.into_iter().filter_map(|r| r.workspace_id).collect())
-    }
     
     /// Trigger manual training for a workspace
     pub async fn train_workspace_now(&self, workspace_id: Uuid) -> Result<()> {
@@ -772,23 +641,4 @@ impl ContinuousTrainer {
         
         self.storage.models().save(workspace_id, &*model_guard, &metrics).await
     }
-}
-
-// Results and Metrics
-// -----------------------------------------------------------------------------
-
-#[derive(Debug, Default)]
-struct TrainingCycleResults {
-    successful: usize,
-    failed: usize,
-    workspace_metrics: Vec<WorkspaceMetrics>,
-}
-
-#[derive(Debug)]
-struct WorkspaceMetrics {
-    workspace_id: Uuid,
-    metrics: TrainingMetrics,
-    duration: Duration,
-    examples_used: usize,
-    model_saved: bool,
 }

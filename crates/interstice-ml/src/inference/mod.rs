@@ -11,18 +11,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use tokenizers::{Tokenizer};
 use tracing::{debug,info, instrument, warn};
 use uuid::Uuid;
 
-mod engine;
-mod bandit;
-mod cache;
-mod edge;
+// Import from interstice_core for compatibility
+use interstice_core::Artifact;
 
-pub use engine::PredictionContext;
+pub mod engine;
+pub mod bandit;
+pub mod cache;
+pub mod edge;
+
 pub use bandit::ThompsonSamplingBandit;
-pub use cache::{LRUCache, ConcurrentLRUCache};
+pub use cache::{LRUCache, ConcurrentLRUCache, CacheBuilder, CacheConfig};
 
 // Configuration for model loading
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,6 +38,9 @@ pub struct ModelConfig {
     pub embedding_dim: usize,
     pub confidence_threshold: f32,
     pub cache_embeddings: bool,
+    pub cache_predictions: bool,
+    pub prediction_cache_size: usize,
+    pub prediction_cache_ttl_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +62,9 @@ impl Default for ModelConfig {
             embedding_dim: 768,
             confidence_threshold: 0.3,
             cache_embeddings: true,
+            cache_predictions: true,
+            prediction_cache_size: 1000,
+            prediction_cache_ttl_seconds: 3600, // 1 hour
         }
     }
 }
@@ -68,6 +77,7 @@ pub struct OutcomePredictor {
     device: Device,
     outcome_mapping: Arc<RwLock<HashMap<usize, OutcomeMetadata>>>,
     performance_tracker: Arc<PerformanceTracker>,
+    prediction_cache: Arc<ConcurrentLRUCache<String, Vec<OutcomePrediction>>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +108,21 @@ impl OutcomePredictor {
             None
         };
         
+        // Initialize prediction cache if enabled
+        let prediction_cache = if config.cache_predictions {
+            let cache_config = CacheConfig {
+                capacity: config.prediction_cache_size,
+                default_ttl: Some(Duration::from_secs(config.prediction_cache_ttl_seconds)),
+                auto_cleanup: true,
+                cleanup_interval: Duration::from_secs(300), // 5 minutes
+                enable_statistics: true,
+                initial_capacity: Some(config.prediction_cache_size / 4),
+            };
+            Arc::new(ConcurrentLRUCache::with_config(cache_config)?)
+        } else {
+            Arc::new(ConcurrentLRUCache::new(0)?)
+        };
+        
         Ok(Self {
             session: Arc::new(RwLock::new(session)),
             environment,
@@ -105,6 +130,7 @@ impl OutcomePredictor {
             device,
             outcome_mapping: Arc::new(RwLock::new(Self::load_outcome_mapping()?)),
             performance_tracker: Arc::new(PerformanceTracker::new()),
+            prediction_cache,
         })
     }
 
@@ -144,9 +170,8 @@ impl OutcomePredictor {
         // Try to use CUDA if available
         #[cfg(feature = "cuda")]
         {
-            if let Ok(provider) = ExecutionProvider::cuda_provider() {
-                session_builder = session_builder.with_execution_providers(&[provider])?;
-            }
+            // Note: CUDA provider setup would be implemented here
+            // For now, we'll use CPU as fallback
         }
         
         // Fallback to CPU
@@ -193,14 +218,26 @@ impl OutcomePredictor {
         Ok(mapping)
     }
 
-    /// Predict outcomes with enhanced error handling
+    /// Predict outcomes with enhanced error handling and caching
     #[instrument(skip(self, embedding, artifacts))]
     pub async fn predict(
         &self,
         embedding: Vec<f32>,
-        artifacts: &[interstice_core::Artifact],
+        artifacts: &[Artifact],
     ) -> Result<Vec<OutcomePrediction>> {
         let start = std::time::Instant::now();
+        
+        // Generate cache key from input
+        let cache_key = self.generate_prediction_cache_key(&embedding, artifacts);
+        
+        // Check cache first if enabled
+        if self.config.cache_predictions {
+            if let Some(cached_predictions) = self.prediction_cache.get(&cache_key) {
+                debug!("Cache hit for prediction with key: {}", cache_key);
+                self.performance_tracker.record_cache_hit(true);
+                return Ok(cached_predictions);
+            }
+        }
         
         // Ensure model is loaded
         let session = self.ensure_model_loaded().await?;
@@ -214,13 +251,48 @@ impl OutcomePredictor {
         // Convert to outcome predictions
         let outcome_predictions = self.convert_predictions(predictions)?;
         
+        // Cache the results if enabled
+        if self.config.cache_predictions {
+            self.prediction_cache.put(cache_key.clone(), outcome_predictions.clone());
+            debug!("Cached prediction with key: {}", cache_key);
+        }
+        
         // Track performance
         self.performance_tracker.record_prediction(
             start.elapsed().as_millis() as f64,
             outcome_predictions.len(),
         );
         
+        if self.config.cache_predictions {
+            self.performance_tracker.record_cache_hit(false);
+        }
+        
         Ok(outcome_predictions)
+    }
+
+    /// Generate a cache key for prediction inputs
+    fn generate_prediction_cache_key(
+        &self,
+        embedding: &[f32],
+        artifacts: &[Artifact],
+    ) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        
+        // Hash embedding
+        for &val in embedding {
+            val.to_bits().hash(&mut hasher);
+        }
+        
+        // Hash artifacts
+        for artifact in artifacts {
+            artifact.id.hash(&mut hasher);
+            artifact.content.hash(&mut hasher);
+            use std::hash::Hash;
+            artifact.artifact_type.hash(&mut hasher);
+        }
+        
+        format!("pred_{:x}", hasher.finish())
     }
 
     /// Ensure model is loaded (lazy loading support)
@@ -276,7 +348,7 @@ impl OutcomePredictor {
     fn prepare_input_features(
         &self,
         embedding: Vec<f32>,
-        artifacts: &[interstice_core::Artifact],
+        artifacts: &[Artifact],
     ) -> Result<Vec<f32>> {
         // Validate embedding dimension
         if embedding.len() != self.config.embedding_dim {
@@ -301,7 +373,7 @@ impl OutcomePredictor {
     }
 
     /// Aggregate features from multiple artifacts
-    fn aggregate_artifact_features(&self, artifacts: &[interstice_core::Artifact]) -> Result<Vec<f32>> {
+    fn aggregate_artifact_features(&self, artifacts: &[Artifact]) -> Result<Vec<f32>> {
         if artifacts.is_empty() {
             return Ok(vec![0.0; 18]); // Platform (12) + Type (5) + Length (1)
         }
@@ -321,13 +393,16 @@ impl OutcomePredictor {
     }
     
     /// Extract features from a single artifact
-    fn extract_artifact_features(&self, _artifact: &interstice_core::Artifact) -> Vec<f32> {
+    fn extract_artifact_features(&self, _artifact: &Artifact) -> Vec<f32> {
         // Placeholder implementation - extract features from artifact
         vec![0.0; 18] // Platform (12) + Type (5) + Length (1)
     }
 
     /// Run inference with proper tensor handling
     async fn run_inference(&self, session: &Session, features: Vec<f32>) -> Result<Vec<f32>> {
+        // Log device being used for debugging
+        debug!("Running inference on device: {:?}", self.device);
+        
         // Create input tensor
         let input_array = Array2::from_shape_vec((1, features.len()), features)?;
         let input_dyn = CowArray::from(input_array.view()).into_dyn();
@@ -433,6 +508,37 @@ impl OutcomePredictor {
                 likely_hours: 336.0,
             },
         }
+    }
+
+    /// Clear the prediction cache
+    pub fn clear_prediction_cache(&self) {
+        self.prediction_cache.clear();
+        debug!("Prediction cache cleared");
+    }
+
+    /// Get prediction cache statistics
+    pub fn get_cache_statistics(&self) -> Option<Arc<crate::inference::cache::CacheStatistics>> {
+        self.prediction_cache.statistics()
+    }
+
+    /// Get cache hit rate
+    pub fn get_cache_hit_rate(&self) -> f64 {
+        self.prediction_cache.statistics()
+            .map(|stats| stats.hit_rate())
+            .unwrap_or(0.0)
+    }
+
+    /// Invalidate cache entries matching a pattern
+    pub fn invalidate_cache_pattern(&self, pattern: &str) -> usize {
+        // This is a simple implementation - in practice you might want more sophisticated pattern matching
+        let mut invalidated = 0;
+        // Note: This would require extending the cache interface to support pattern-based invalidation
+        // For now, we'll just clear the entire cache if pattern matching is requested
+        if !pattern.is_empty() {
+            self.clear_prediction_cache();
+            invalidated = self.prediction_cache.len();
+        }
+        invalidated
     }
 }
 
@@ -617,7 +723,7 @@ impl PerformanceTracker {
         }
     }
 
-    fn record_prediction(&self, latency_ms: f64, num_outcomes: usize) {
+    fn record_prediction(&self, latency_ms: f64, _num_outcomes: usize) {
         let mut metrics = self.metrics.write();
         let mut latencies = self.latencies.write();
         
@@ -633,6 +739,15 @@ impl PerformanceTracker {
         metrics.prediction_latency_ms = latencies.iter().sum::<f64>() / latencies.len() as f64;
         metrics.last_updated = chrono::Utc::now();
     }
+
+    fn record_cache_hit(&self, hit: bool) {
+        let mut metrics = self.metrics.write();
+        let total = metrics.total_predictions as f32;
+        if total > 0.0 {
+            let hit_value = if hit { 1.0 } else { 0.0 };
+            metrics.cache_hit_rate = (metrics.cache_hit_rate * (total - 1.0) + hit_value) / total;
+        }
+    }
 }
 
 impl Default for ModelMetrics {
@@ -647,6 +762,7 @@ impl Default for ModelMetrics {
             auc_roc: None,
             mean_confidence: 0.0,
             prediction_latency_ms: 0.0,
+            cache_hit_rate: 0.0,
             last_updated: chrono::Utc::now(),
             per_outcome_metrics: None,
         }

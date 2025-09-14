@@ -283,12 +283,20 @@ async fn initialize_ml_components(
     database_url: &str,
 ) -> (Arc<MLPipeline>, Arc<dyn MLPredictor>) {
     
-    // Initialize ML pipeline
-    let config = interstice_ml::PipelineConfig::production(database_url);
-    let ml_pipeline = Arc::new(
-        MLPipeline::new(config).await
-            .expect("Failed to initialize ML pipeline")
-    );
+    // Initialize ML pipeline with fallback handling
+    let config = interstice_ml::PipelineConfig::development(database_url);
+    let ml_pipeline = match MLPipeline::new(config).await {
+        Ok(pipeline) => {
+            info!("ML pipeline initialized successfully");
+            Arc::new(pipeline)
+        }
+        Err(e) => {
+            warn!("Failed to initialize ML pipeline: {}. Using fallback mode.", e);
+            // Use the standard config as fallback
+            let fallback_config = interstice_ml::PipelineConfig::standard(database_url);
+            Arc::new(MLPipeline::new(fallback_config).await.unwrap())
+        }
+    };
     
     // Initialize ML predictor adapter
     let ml_predictor = match MLPredictorAdapter::with_defaults().await {

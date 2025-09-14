@@ -22,6 +22,37 @@ pub struct OutcomePrediction {
     pub suggested_targets: Vec<String>,
     pub estimated_impact: f64,
     pub recommended_priority: Priority,
+    pub alternative_outcomes: Vec<AlternativeOutcome>,
+    pub contributing_factors: Vec<ContributingFactor>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContributingFactor {
+    pub factor_id: String,
+    pub name: String,
+    pub weight: f32,
+    pub description: Option<String>,
+    pub category: FactorCategory,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FactorCategory {
+    Historical,
+    Contextual,
+    Environmental,
+    Behavioral,
+    Technical,
+    External,
+    Custom(String),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlternativeOutcome {
+    pub outcome_id: Uuid,
+    pub outcome_name: String,
+    pub probability: f32,
+    pub relative_likelihood: f32,
+    pub key_differences: Vec<String>,
 }
 
 // Platform conversion trait
