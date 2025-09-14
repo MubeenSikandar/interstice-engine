@@ -7,7 +7,7 @@ Cargo.lock
 # Environment
 .env
 .env.local
-*.md
+CLAUDE.md
 
 # IDE
 .idea/
