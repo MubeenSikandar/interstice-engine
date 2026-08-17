@@ -395,4 +395,4 @@ at your option.
 
 ---
 
-**Made with ❤️ by the Interstice Team**
+**Made with ❤️ by Mubeen Sikandar**
